@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  adu-web:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    ports:
+      - "5000:5000"
+    environment:
+      - SECRET_KEY=${SECRET_KEY}
+      - FERNET_KEY=${FERNET_KEY}
+      - ADU_DB_PATH=/app/data/adu.db
+      - FORCE_HTTPS=${FORCE_HTTPS:-false}
+      - FLASK_DEBUG=false
+    volumes:
+      - adu_data:/app/data
+      - adu_exports:/app/exports
+      - adu_logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/history"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - adu_network
+
+  adu-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    command: ["python", "adu/worker.py"]
+    environment:
+      - FERNET_KEY=${FERNET_KEY}
+      - ADU_DB_PATH=/app/data/adu.db
+    volumes:
+      - adu_data:/app/data
+      - adu_exports:/app/exports
+      - adu_logs:/app/logs
+    restart: unless-stopped
+    depends_on:
+      - adu-web
+    networks:
+      - adu_network
+
+volumes:
+  adu_data:
+    driver: local
+  adu_exports:
+    driver: local
+  adu_logs:
+    driver: local
+
+networks:
+  adu_network:
+    driver: bridge

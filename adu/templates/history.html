@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Job History</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        table { width: 100%; border-collapse: collapse; margin: 1em 0; }
+        th, td { border: 1px solid #ddd; padding: 0.5em; text-align: left; }
+        th { background-color: #f5f5f5; }
+        .status-queued { color: #007bff; font-weight: bold; }
+        .status-running { color: #ffc107; font-weight: bold; }
+        .status-complete { color: #28a745; font-weight: bold; }
+        .status-complete-with-errors { color: #fd7e14; font-weight: bold; }
+        .nav-link { display: inline-block; margin: 1em 0; color: #007bff; text-decoration: none; }
+        .nav-link:hover { text-decoration: underline; }
+        .refresh-indicator { color: #28a745; font-size: 0.9em; margin-left: 1em; }
+        .progress-bar { width: 100%; background-color: #f0f0f0; border-radius: 3px; height: 20px; margin: 0.2em 0; }
+        .progress-fill { height: 100%; border-radius: 3px; transition: width 0.3s ease; }
+        .progress-running { background-color: #ffc107; }
+        .progress-complete { background-color: #28a745; }
+        .progress-error { background-color: #dc3545; }
+        .job-row:hover { background-color: #f8f9fa; }
+        .auto-refresh { font-size: 0.9em; color: #666; margin: 1em 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="nav-link">← Back to Dashboard</a>
+        
+        <h1>Job History <span id="refresh-indicator" class="refresh-indicator"></span></h1>
+        
+        <div class="auto-refresh">
+            <input type="checkbox" id="auto-refresh" checked> 
+            <label for="auto-refresh">Auto-refresh every 5 seconds</label>
+        </div>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th>Job ID</th>
+                    <th>DB Username</th>
+                    <th>Overall Status</th>
+                    <th>Progress</th>
+                    <th>Start Time</th>
+                    <th>End Time</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="jobs-tbody">
+                <!-- Job history will be populated here by JavaScript -->
+            </tbody>
+        </table>
+    </div>
+    <script>
+        let refreshInterval;
+        
+        async function loadJobs() {
+            const refreshIndicator = document.getElementById('refresh-indicator');
+            refreshIndicator.textContent = '⟳ Refreshing...';
+            
+            try {
+                const response = await fetch('/api/history');
+                const jobs = await response.json();
+                
+                const tbody = document.getElementById('jobs-tbody');
+                tbody.innerHTML = '';
+                
+                // Load table progress for each job
+                for (const job of jobs) {
+                    let progressHtml = '';
+                    let progressData = null;
+                    
+                    if (job.overall_status === 'running' || job.overall_status === 'complete' || job.overall_status === 'complete_with_errors') {
+                        try {
+                            const tablesResponse = await fetch(`/api/job/${job.job_id}/tables`);
+                            const tables = await tablesResponse.json();
+                            
+                            if (tables.length > 0) {
+                                const completed = tables.filter(t => t.status === 'completed').length;
+                                const failed = tables.filter(t => t.status === 'failed').length;
+                                const processing = tables.filter(t => t.status === 'processing').length;
+                                const total = tables.length;
+                                
+                                const completedPercent = (completed / total) * 100;
+                                const failedPercent = (failed / total) * 100;
+                                const processingPercent = (processing / total) * 100;
+                                
+                                progressData = { completed, failed, processing, total, completedPercent, failedPercent, processingPercent };
+                                
+                                progressHtml = `
+                                    <div class="progress-bar">
+                                        <div class="progress-fill progress-complete" style="width: ${completedPercent}%"></div>
+                                        <div class="progress-fill progress-error" style="width: ${failedPercent}%; margin-left: ${completedPercent}%"></div>
+                                        <div class="progress-fill progress-running" style="width: ${processingPercent}%; margin-left: ${completedPercent + failedPercent}%"></div>
+                                    </div>
+                                    <small>${completed}/${total} completed${failed > 0 ? `, ${failed} failed` : ''}${processing > 0 ? `, ${processing} processing` : ''}</small>
+                                `;
+                            }
+                        } catch (e) {
+                            console.error('Error loading table progress:', e);
+                        }
+                    }
+                    
+                    if (!progressHtml) {
+                        progressHtml = `<small>${job.overall_status}</small>`;
+                    }
+                    
+                    const row = document.createElement('tr');
+                    row.className = 'job-row';
+                    row.innerHTML = `
+                        <td><a href="/job/${job.job_id}">${job.job_id}</a></td>
+                        <td>${job.db_username}</td>
+                        <td class="status-${job.overall_status.replace('_', '-')}">${job.overall_status}</td>
+                        <td>${progressHtml}</td>
+                        <td>${job.start_time || 'N/A'}</td>
+                        <td>${job.end_time || 'N/A'}</td>
+                        <td><a href="/job/${job.job_id}" class="nav-link">View Details</a></td>
+                    `;
+                    tbody.appendChild(row);
+                }
+                
+                refreshIndicator.textContent = `✓ Last updated: ${new Date().toLocaleTimeString()}`;
+                
+            } catch (error) {
+                console.error('Error loading jobs:', error);
+                refreshIndicator.textContent = '✗ Error loading data';
+            }
+        }
+        
+        function startAutoRefresh() {
+            const autoRefreshCheckbox = document.getElementById('auto-refresh');
+            
+            if (autoRefreshCheckbox.checked) {
+                refreshInterval = setInterval(loadJobs, 5000);
+            } else if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+            }
+        }
+        
+        // Initial load
+        loadJobs();
+        
+        // Set up auto-refresh
+        document.getElementById('auto-refresh').addEventListener('change', startAutoRefresh);
+        startAutoRefresh();
+        
+        // Clean up interval when page is unloaded
+        window.addEventListener('beforeunload', () => {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
+        });
+    </script>
+</body>
+</html>

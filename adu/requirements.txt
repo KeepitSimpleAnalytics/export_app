@@ -1,0 +1,9 @@
+Flask
+Flask-SeaSurf
+Flask-Talisman
+polars
+duckdb
+pandera
+psycopg2-binary
+vertica-python
+cryptography

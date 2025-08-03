@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Job Details</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .section { margin-bottom: 2em; }
+        .config-grid { display: grid; grid-template-columns: 200px 1fr; gap: 1em; margin: 1em 0; }
+        .config-grid div { padding: 0.5em; }
+        .config-grid .label { font-weight: bold; background-color: #f5f5f5; }
+        table { width: 100%; border-collapse: collapse; margin: 1em 0; }
+        th, td { border: 1px solid #ddd; padding: 0.5em; text-align: left; }
+        th { background-color: #f5f5f5; }
+        .status-completed { color: green; font-weight: bold; }
+        .status-failed { color: red; font-weight: bold; }
+        .status-processing { color: orange; font-weight: bold; }
+        pre { background-color: #f5f5f5; padding: 1em; overflow: auto; max-width: 600px; }
+        .summary-stats { display: flex; gap: 2em; margin: 1em 0; }
+        .stat-box { padding: 1em; border: 1px solid #ddd; background-color: #f9f9f9; text-align: center; }
+        .nav-link { display: inline-block; margin: 1em 0; color: #007bff; text-decoration: none; }
+        .nav-link:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/history" class="nav-link">← Back to Job History</a>
+        <a href="/logs" class="nav-link">View Worker Logs</a>
+        <a href="#" class="nav-link" onclick="viewJobLogs()">View Logs for This Job</a>
+        
+        <h1>Job Details</h1>
+        
+        <div class="section">
+            <h2>Job Information</h2>
+            <div id="job-details">
+                <!-- Job details will be populated here by JavaScript -->
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Job Configuration</h2>
+            <div id="job-config">
+                <!-- Job configuration will be populated here by JavaScript -->
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Export Summary</h2>
+            <div id="export-summary">
+                <!-- Export summary will be populated here by JavaScript -->
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Table Export Status</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Table Name</th>
+                        <th>Status</th>
+                        <th>Row Count</th>
+                        <th>File Path</th>
+                        <th>Start Time</th>
+                        <th>End Time</th>
+                        <th>Error Message</th>
+                    </tr>
+                </thead>
+                <tbody id="tables-tbody">
+                    <!-- Table details will be populated here by JavaScript -->
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section">
+            <h2>Errors</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Error Message</th>
+                        <th>Traceback</th>
+                        <th>Context</th>
+                    </tr>
+                </thead>
+                <tbody id="errors-tbody">
+                    <!-- Errors will be populated here by JavaScript -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <script>
+        const job_id = window.location.pathname.split('/').pop();
+
+        function viewJobLogs() {
+            window.open(`/logs?job_id=${job_id}`, '_blank');
+        }
+
+        // Load job details
+        fetch(`/api/job/${job_id}`)
+            .then(response => response.json())
+            .then(job => {
+                const jobDetailsDiv = document.getElementById('job-details');
+                jobDetailsDiv.innerHTML = `
+                    <div class="config-grid">
+                        <div class="label">Job ID:</div>
+                        <div>${job.job_id}</div>
+                        <div class="label">DB Username:</div>
+                        <div>${job.db_username}</div>
+                        <div class="label">Overall Status:</div>
+                        <div class="status-${job.overall_status.replace('_', '-')}">${job.overall_status}</div>
+                        <div class="label">Start Time:</div>
+                        <div>${job.start_time || 'N/A'}</div>
+                        <div class="label">End Time:</div>
+                        <div>${job.end_time || 'N/A'}</div>
+                    </div>
+                `;
+            });
+
+        // Load job configuration
+        fetch(`/api/job/${job_id}/config`)
+            .then(response => response.json())
+            .then(config => {
+                const configDiv = document.getElementById('job-config');
+                configDiv.innerHTML = `
+                    <div class="config-grid">
+                        <div class="label">Database Type:</div>
+                        <div>${config.db_type || 'N/A'}</div>
+                        <div class="label">Host:</div>
+                        <div>${config.db_host || 'N/A'}</div>
+                        <div class="label">Port:</div>
+                        <div>${config.db_port || 'N/A'}</div>
+                        <div class="label">Database Name:</div>
+                        <div>${config.db_name || 'N/A'}</div>
+                        <div class="label">Username:</div>
+                        <div>${config.db_username || 'N/A'}</div>
+                        <div class="label">Password:</div>
+                        <div>${config.db_password || 'N/A'}</div>
+                        <div class="label">Output Path:</div>
+                        <div>${config.output_path || '/tmp/exports'}</div>
+                        <div class="label">Tables:</div>
+                        <div>${config.tables && config.tables.length > 0 ? config.tables.join(', ') : 'All tables (auto-discovery)'}</div>
+                    </div>
+                `;
+            });
+
+        // Load table export status
+        fetch(`/api/job/${job_id}/tables`)
+            .then(response => response.json())
+            .then(tables => {
+                const tbody = document.getElementById('tables-tbody');
+                const summaryDiv = document.getElementById('export-summary');
+                
+                if (tables.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7">No table export data available</td></tr>';
+                    summaryDiv.innerHTML = '<p>No export summary available</p>';
+                    return;
+                }
+
+                // Calculate summary statistics
+                const completed = tables.filter(t => t.status === 'completed').length;
+                const failed = tables.filter(t => t.status === 'failed').length;
+                const processing = tables.filter(t => t.status === 'processing').length;
+                const totalRows = tables.filter(t => t.row_count).reduce((sum, t) => sum + t.row_count, 0);
+
+                summaryDiv.innerHTML = `
+                    <div class="summary-stats">
+                        <div class="stat-box">
+                            <h3>${tables.length}</h3>
+                            <p>Total Tables</p>
+                        </div>
+                        <div class="stat-box">
+                            <h3 class="status-completed">${completed}</h3>
+                            <p>Completed</p>
+                        </div>
+                        <div class="stat-box">
+                            <h3 class="status-failed">${failed}</h3>
+                            <p>Failed</p>
+                        </div>
+                        <div class="stat-box">
+                            <h3 class="status-processing">${processing}</h3>
+                            <p>Processing</p>
+                        </div>
+                        <div class="stat-box">
+                            <h3>${totalRows.toLocaleString()}</h3>
+                            <p>Total Rows Exported</p>
+                        </div>
+                    </div>
+                `;
+
+                tables.forEach(table => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${table.table_name}</td>
+                        <td class="status-${table.status}">${table.status}</td>
+                        <td>${table.row_count ? table.row_count.toLocaleString() : 'N/A'}</td>
+                        <td>${table.file_path || 'N/A'}</td>
+                        <td>${table.start_time || 'N/A'}</td>
+                        <td>${table.end_time || 'N/A'}</td>
+                        <td>${table.error_message || ''}</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            });
+
+        // Load errors
+        fetch(`/api/job/${job_id}/errors`)
+            .then(response => response.json())
+            .then(errors => {
+                const tbody = document.getElementById('errors-tbody');
+                if (errors.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4">No errors recorded</td></tr>';
+                    return;
+                }
+                
+                errors.forEach(error => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${error.timestamp}</td>
+                        <td>${error.error_message}</td>
+                        <td><pre>${error.traceback}</pre></td>
+                        <td>${error.context}</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            });
+    </script>
+</body>
+</html>

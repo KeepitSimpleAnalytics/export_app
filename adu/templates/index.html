@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Air-gapped Data Utility</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .form-group { margin-bottom: 1em; }
+        label { display: block; margin-bottom: 0.5em; }
+        input, select, textarea { width: 100%; padding: 0.5em; }
+        button { padding: 0.7em 1.5em; }
+        #response { margin-top: 1em; padding: 1em; border: 1px solid #ccc; background-color: #f9f9f9; }
+        #discover-btn { background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        #discover-btn:hover { background-color: #0056b3; }
+        #discover-btn:disabled { background-color: #6c757d; cursor: not-allowed; }
+        .table-item { 
+            display: block; 
+            padding: 0.5em; 
+            margin: 0.2em 0; 
+            background-color: #f8f9fa; 
+            border: 1px solid #dee2e6; 
+            border-radius: 4px; 
+            cursor: pointer; 
+            user-select: none;
+        }
+        .table-item:hover { background-color: #e9ecef; }
+        .table-item.selected { background-color: #007bff; color: white; }
+        .table-item-info { font-size: 0.8em; color: #666; margin-top: 0.2em; }
+        .table-item.selected .table-item-info { color: #cce7ff; }
+        .error { color: #dc3545; }
+        .success { color: #28a745; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Air-gapped Data Utility (ADU)</h1>
+        <p>Configure and start a new data migration job.</p>
+        
+        <form id="job-form">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+            <div class="form-group">
+                <label for="db_type">Database Type</label>
+                <select id="db_type" name="db_type">
+                    <option value="postgresql">PostgreSQL</option>
+                    <option value="vertica">Vertica</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="db_host">Host</label>
+                <input type="text" id="db_host" name="db_host" required>
+            </div>
+            <div class="form-group">
+                <label for="db_port">Port</label>
+                <input type="number" id="db_port" name="db_port" value="5432" required>
+            </div>
+            <div class="form-group">
+                <label for="db_name">Database Name</label>
+                <input type="text" id="db_name" name="db_name" required>
+            </div>
+            <div class="form-group">
+                <label for="db_username">Username</label>
+                <input type="text" id="db_username" name="db_username" required>
+            </div>
+            <div class="form-group">
+                <label for="db_password">Password</label>
+                <input type="password" id="db_password" name="db_password" required>
+            </div>
+            <div class="form-group">
+                <button type="button" id="discover-btn" onclick="discoverSchema()">🔍 Discover Database Schema</button>
+                <div id="discovery-status" style="margin-top: 0.5em; font-size: 0.9em; color: #666;"></div>
+            </div>
+            
+            <div class="form-group" id="tables-section">
+                <label for="tables">Tables to Export</label>
+                <div style="margin-bottom: 0.5em;">
+                    <label>
+                        <input type="radio" name="table-mode" value="all" checked onchange="toggleTableMode()"> 
+                        Export All Tables
+                    </label>
+                    <label style="margin-left: 1em;">
+                        <input type="radio" name="table-mode" value="select" onchange="toggleTableMode()"> 
+                        Select Specific Tables
+                    </label>
+                </div>
+                
+                <div id="tables-manual" style="display: none;">
+                    <textarea id="tables" name="tables" rows="3" placeholder="e.g., users,orders,products"></textarea>
+                    <small>Enter table names separated by commas</small>
+                </div>
+                
+                <div id="tables-discovered" style="display: none;">
+                    <div id="table-list" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; padding: 0.5em;">
+                        <!-- Discovered tables will be populated here -->
+                    </div>
+                    <small>Select tables to export (click to toggle selection)</small>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label for="output_path">Output Path (default: /tmp/exports)</label>
+                <input type="text" id="output_path" name="output_path" value="/tmp/exports" placeholder="/tmp/exports">
+            </div>
+            <button type="submit">Start Export Job</button>
+        </form>
+
+        <div id="response" style="display:none;"></div>
+
+        <hr style="margin: 2em 0;">
+        <a href="/history">View All Job History</a>
+    </div>
+
+    <script>
+        let discoveredTables = [];
+        let selectedTables = [];
+
+        function toggleTableMode() {
+            const mode = document.querySelector('input[name="table-mode"]:checked').value;
+            const manualDiv = document.getElementById('tables-manual');
+            const discoveredDiv = document.getElementById('tables-discovered');
+            
+            if (mode === 'select') {
+                if (discoveredTables.length > 0) {
+                    discoveredDiv.style.display = 'block';
+                    manualDiv.style.display = 'none';
+                } else {
+                    manualDiv.style.display = 'block';
+                    discoveredDiv.style.display = 'none';
+                }
+            } else {
+                manualDiv.style.display = 'none';
+                discoveredDiv.style.display = 'none';
+            }
+        }
+
+        function discoverSchema() {
+            const btn = document.getElementById('discover-btn');
+            const status = document.getElementById('discovery-status');
+            
+            // Get connection details
+            const formData = new FormData(document.getElementById('job-form'));
+            const data = Object.fromEntries(formData.entries());
+            
+            // Validate required fields
+            const required = ['db_type', 'db_host', 'db_port', 'db_username', 'db_password'];
+            const missing = required.filter(field => !data[field]);
+            
+            if (missing.length > 0) {
+                status.innerHTML = `<span class="error">Please fill in: ${missing.join(', ')}</span>`;
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.textContent = '🔄 Discovering...';
+            status.innerHTML = '<span style="color: #007bff;">Connecting to database...</span>';
+            
+            fetch('/api/discover-schema', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': data._csrf_token
+                },
+                body: JSON.stringify(data),
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.error) {
+                    status.innerHTML = `<span class="error">Error: ${result.error}</span>`;
+                } else {
+                    discoveredTables = result.tables;
+                    status.innerHTML = `<span class="success">Found ${result.count} tables in ${result.database_type} database</span>`;
+                    
+                    // Populate table list
+                    populateTableList(result.tables);
+                    
+                    // Switch to select mode
+                    document.querySelector('input[name="table-mode"][value="select"]').checked = true;
+                    toggleTableMode();
+                }
+            })
+            .catch(error => {
+                status.innerHTML = `<span class="error">Connection failed: ${error.message}</span>`;
+                console.error('Error:', error);
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.textContent = '🔍 Discover Database Schema';
+            });
+        }
+
+        function populateTableList(tables) {
+            const tableList = document.getElementById('table-list');
+            tableList.innerHTML = '';
+            
+            tables.forEach(tableName => {
+                const tableItem = document.createElement('div');
+                tableItem.className = 'table-item';
+                tableItem.onclick = () => toggleTableSelection(tableName, tableItem);
+                
+                tableItem.innerHTML = `
+                    <div><strong>${tableName}</strong></div>
+                    <div class="table-item-info">Click to view details or toggle selection</div>
+                `;
+                
+                tableList.appendChild(tableItem);
+            });
+        }
+
+        function toggleTableSelection(tableName, element) {
+            if (selectedTables.includes(tableName)) {
+                selectedTables = selectedTables.filter(t => t !== tableName);
+                element.classList.remove('selected');
+            } else {
+                selectedTables.push(tableName);
+                element.classList.add('selected');
+            }
+            
+            // Update the hidden tables input
+            document.getElementById('tables').value = selectedTables.join(',');
+        }
+
+        function getSelectedTables() {
+            const mode = document.querySelector('input[name="table-mode"]:checked').value;
+            
+            if (mode === 'all') {
+                return [];  // Empty array means all tables
+            } else if (mode === 'select') {
+                if (discoveredTables.length > 0) {
+                    return selectedTables;
+                } else {
+                    // Manual entry
+                    const tablesInput = document.getElementById('tables').value;
+                    return tablesInput ? tablesInput.split(',').map(t => t.trim()).filter(t => t) : [];
+                }
+            }
+        }
+
+        document.getElementById('job-form').addEventListener('submit', function(event) {
+            event.preventDefault();
+            
+            const formData = new FormData(event.target);
+            const data = Object.fromEntries(formData.entries());
+            const responseDiv = document.getElementById('response');
+
+            // Get selected tables based on mode
+            data.tables = getSelectedTables();
+
+            fetch('/api/jobs', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': data._csrf_token
+                },
+                body: JSON.stringify(data),
+            })
+            .then(response => response.json())
+            .then(result => {
+                responseDiv.style.display = 'block';
+                if (result.job_id) {
+                    responseDiv.innerHTML = `<span class="success">Successfully started job. ID: ${result.job_id}</span>`;
+                    responseDiv.innerHTML += `<br><a href="/job/${result.job_id}">View job details</a>`;
+                } else if (result.error) {
+                    responseDiv.innerHTML = `<span class="error">Error: ${result.error}</span>`;
+                } else {
+                    responseDiv.innerHTML = `<span class="error">Unknown error occurred</span>`;
+                }
+            })
+            .catch(error => {
+                responseDiv.style.display = 'block';
+                responseDiv.innerHTML = `<span class="error">An error occurred: ${error.message}</span>`;
+                console.error('Error:', error);
+            });
+        });
+
+        // Initialize table mode
+        toggleTableMode();
+    </script>
+</body>
+</html>

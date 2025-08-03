@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Worker Logs</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .nav-link { display: inline-block; margin: 1em 0; color: #007bff; text-decoration: none; }
+        .nav-link:hover { text-decoration: underline; }
+        .controls { margin: 1em 0; display: flex; gap: 1em; align-items: center; flex-wrap: wrap; }
+        .controls input, .controls select, .controls button { padding: 0.5em; }
+        .log-container { 
+            background-color: #f8f9fa; 
+            border: 1px solid #dee2e6; 
+            border-radius: 4px; 
+            padding: 1em; 
+            max-height: 600px; 
+            overflow-y: auto; 
+            font-family: 'Courier New', monospace; 
+            font-size: 0.9em; 
+            white-space: pre-wrap; 
+        }
+        .log-info { margin: 1em 0; color: #666; font-size: 0.9em; }
+        .error { color: #dc3545; }
+        .warning { color: #fd7e14; }
+        .info { color: #28a745; }
+        .refresh-btn { background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .refresh-btn:hover { background-color: #0056b3; }
+        .auto-refresh { margin-left: 1em; }
+        .log-line { margin: 0.2em 0; }
+        .highlight { background-color: #fff3cd; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/history" class="nav-link">← Back to Job History</a>
+        
+        <h1>Worker Logs</h1>
+        
+        <div class="controls">
+            <label>
+                Job ID Filter:
+                <input type="text" id="job-filter" placeholder="Enter job ID to filter">
+            </label>
+            
+            <label>
+                Lines to show:
+                <select id="lines-select">
+                    <option value="50">50</option>
+                    <option value="100" selected>100</option>
+                    <option value="200">200</option>
+                    <option value="500">500</option>
+                    <option value="1000">1000</option>
+                </select>
+            </label>
+            
+            <button class="refresh-btn" onclick="loadLogs()">Refresh</button>
+            
+            <label class="auto-refresh">
+                <input type="checkbox" id="auto-refresh" checked>
+                Auto-refresh (10s)
+            </label>
+        </div>
+        
+        <div class="log-info" id="log-info">
+            <!-- Log information will be populated here -->
+        </div>
+        
+        <div class="log-container" id="log-container">
+            <!-- Log content will be populated here -->
+        </div>
+    </div>
+
+    <script>
+        let refreshInterval;
+        
+        function loadLogs() {
+            const jobFilter = document.getElementById('job-filter').value.trim();
+            const lines = document.getElementById('lines-select').value;
+            const logContainer = document.getElementById('log-container');
+            const logInfo = document.getElementById('log-info');
+            
+            // Build query parameters
+            const params = new URLSearchParams({ lines });
+            if (jobFilter) {
+                params.append('job_id', jobFilter);
+            }
+            
+            fetch(`/api/logs/worker?${params}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        logContainer.textContent = `Error: ${data.error}`;
+                        logInfo.textContent = '';
+                        return;
+                    }
+                    
+                    // Update log info
+                    logInfo.innerHTML = `
+                        Showing ${data.showing} of ${data.total_lines} total lines
+                        ${data.filtered ? `(filtered for job ID: ${jobFilter})` : ''}
+                        - Last updated: ${new Date().toLocaleTimeString()}
+                    `;
+                    
+                    // Process and display log lines
+                    logContainer.innerHTML = '';
+                    data.lines.forEach(line => {
+                        const logLine = document.createElement('div');
+                        logLine.className = 'log-line';
+                        
+                        // Add highlighting for different log levels
+                        if (line.includes('ERROR')) {
+                            logLine.classList.add('error');
+                        } else if (line.includes('WARNING')) {
+                            logLine.classList.add('warning');
+                        } else if (line.includes('INFO')) {
+                            logLine.classList.add('info');
+                        }
+                        
+                        // Highlight filtered job ID
+                        if (jobFilter && line.includes(jobFilter)) {
+                            logLine.classList.add('highlight');
+                        }
+                        
+                        logLine.textContent = line;
+                        logContainer.appendChild(logLine);
+                    });
+                    
+                    // Auto-scroll to bottom
+                    logContainer.scrollTop = logContainer.scrollHeight;
+                })
+                .catch(error => {
+                    logContainer.textContent = `Error loading logs: ${error}`;
+                    logInfo.textContent = '';
+                });
+        }
+        
+        function startAutoRefresh() {
+            const autoRefreshCheckbox = document.getElementById('auto-refresh');
+            
+            if (autoRefreshCheckbox.checked) {
+                refreshInterval = setInterval(loadLogs, 10000); // 10 seconds
+            } else if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+            }
+        }
+        
+        // Event listeners
+        document.getElementById('job-filter').addEventListener('input', loadLogs);
+        document.getElementById('lines-select').addEventListener('change', loadLogs);
+        document.getElementById('auto-refresh').addEventListener('change', startAutoRefresh);
+        
+        // Check for job_id parameter in URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const jobIdParam = urlParams.get('job_id');
+        if (jobIdParam) {
+            document.getElementById('job-filter').value = jobIdParam;
+        }
+
+        // Initial load
+        loadLogs();
+        startAutoRefresh();
+        
+        // Clean up interval when page is unloaded
+        window.addEventListener('beforeunload', () => {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# Production requirements for Air-gapped Data Utility (ADU)
+# Includes all base requirements plus production-specific packages
+
+# Base requirements
+Flask
+Flask-SeaSurf
+Flask-Talisman
+polars
+duckdb
+pandera
+psycopg2-binary
+vertica-python
+cryptography
+
+# Production-specific packages
+gunicorn>=20.1.0
+python-dotenv>=0.19.0
+
+# Monitoring and logging (optional)
+# sentry-sdk[flask]>=1.0.0

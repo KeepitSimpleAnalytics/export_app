@@ -1,0 +1,47 @@
+# Production Dockerfile for Air-gapped Data Utility (ADU)
+FROM python:3.10-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Create app user
+RUN groupadd -r adu && useradd -r -g adu adu
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set work directory
+WORKDIR /app
+
+# Copy and install Python dependencies
+COPY requirements-prod.txt .
+RUN pip install --no-cache-dir -r requirements-prod.txt
+
+# Copy application code
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p /app/data /app/logs /app/exports && \
+    chown -R adu:adu /app
+
+# Switch to non-root user
+USER adu
+
+# Initialize database
+RUN python init_database.py
+
+# Expose port
+EXPOSE 5000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:5000/api/history || exit 1
+
+# Default command
+CMD ["gunicorn", "--config", "gunicorn.conf.py", "--chdir", "adu", "app:app"]
