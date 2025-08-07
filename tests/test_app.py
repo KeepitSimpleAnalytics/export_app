@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'adu'))
 
 from app import app
-from database import init_db
+from database import init_db, get_db_connection
 
 
 class TestFlaskApp(unittest.TestCase):
@@ -38,6 +38,16 @@ class TestFlaskApp(unittest.TestCase):
     
     def tearDown(self):
         """Clean up test environment"""
+        # Clean up the database
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM jobs")
+        cursor.execute("DELETE FROM job_configs")
+        cursor.execute("DELETE FROM table_exports")
+        cursor.execute("DELETE FROM errors")
+        conn.commit()
+        conn.close()
+
         self.db_patcher.stop()
         try:
             os.unlink(self.test_db.name)
@@ -79,9 +89,7 @@ class TestFlaskApp(unittest.TestCase):
     def test_api_job_not_found(self):
         """Test API job endpoint with non-existent job"""
         response = self.client.get('/api/job/nonexistent')
-        # This should return a 500 error because the job doesn't exist
-        # and the code tries to call dict() on None
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 404)
     
     def test_api_job_config_not_found(self):
         """Test API job config endpoint with non-existent job"""
@@ -173,6 +181,16 @@ class TestApiIntegration(unittest.TestCase):
     
     def tearDown(self):
         """Clean up test environment"""
+        # Clean up the database
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM jobs")
+        cursor.execute("DELETE FROM job_configs")
+        cursor.execute("DELETE FROM table_exports")
+        cursor.execute("DELETE FROM errors")
+        conn.commit()
+        conn.close()
+
         self.db_patcher.stop()
         try:
             os.unlink(self.test_db.name)

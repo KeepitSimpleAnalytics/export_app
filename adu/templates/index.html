@@ -39,7 +39,6 @@
         <p>Configure and start a new data migration job.</p>
         
         <form id="job-form">
-            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
             <div class="form-group">
                 <label for="db_type">Database Type</label>
                 <select id="db_type" name="db_type">
@@ -72,6 +71,14 @@
                 <div id="discovery-status" style="margin-top: 0.5em; font-size: 0.9em; color: #666;"></div>
             </div>
             
+            <div class="form-group" id="schema-section" style="display: none;">
+                <label for="schema-select">Schema Selection</label>
+                <select id="schema-select" onchange="onSchemaChange()" style="margin-bottom: 0.5em;">
+                    <option value="">Select a schema...</option>
+                </select>
+                <div id="schema-status" style="font-size: 0.9em; color: #666;"></div>
+            </div>
+            
             <div class="form-group" id="tables-section">
                 <label for="tables">Tables to Export</label>
                 <div style="margin-bottom: 0.5em;">
@@ -99,8 +106,8 @@
             </div>
             
             <div class="form-group">
-                <label for="output_path">Output Path (default: /tmp/exports)</label>
-                <input type="text" id="output_path" name="output_path" value="/tmp/exports" placeholder="/tmp/exports">
+                <label for="output_path">Output Path (default: /app/exports)</label>
+                <input type="text" id="output_path" name="output_path" value="/app/exports" placeholder="/app/exports">
             </div>
             <button type="submit">Start Export Job</button>
         </form>
@@ -114,6 +121,8 @@
     <script>
         let discoveredTables = [];
         let selectedTables = [];
+        let discoveredSchemas = [];
+        let tablesBySchema = {};
 
         function toggleTableMode() {
             const mode = document.querySelector('input[name="table-mode"]:checked').value;
@@ -155,11 +164,11 @@
             btn.textContent = '🔄 Discovering...';
             status.innerHTML = '<span style="color: #007bff;">Connecting to database...</span>';
             
-            fetch('/api/discover-schema', {
+            // First discover schemas
+            fetch('/api/discover-schemas', {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': data._csrf_token
+                    'Content-Type': 'application/json'
                 },
                 body: JSON.stringify(data),
             })
@@ -168,15 +177,17 @@
                 if (result.error) {
                     status.innerHTML = `<span class="error">Error: ${result.error}</span>`;
                 } else {
-                    discoveredTables = result.tables;
-                    status.innerHTML = `<span class="success">Found ${result.count} tables in ${result.database_type} database</span>`;
+                    discoveredSchemas = result.schemas;
+                    status.innerHTML = `<span class="success">Found ${result.count} schemas in ${result.database_type} database</span>`;
                     
-                    // Populate table list
-                    populateTableList(result.tables);
+                    // Populate schema dropdown
+                    populateSchemaDropdown(result.schemas);
                     
-                    // Switch to select mode
-                    document.querySelector('input[name="table-mode"][value="select"]').checked = true;
-                    toggleTableMode();
+                    // Show schema section
+                    document.getElementById('schema-section').style.display = 'block';
+                    
+                    // Discover all tables by schema for better organization
+                    discoverAllTables(data);
                 }
             })
             .catch(error => {
@@ -220,6 +231,83 @@
             document.getElementById('tables').value = selectedTables.join(',');
         }
 
+        function populateSchemaDropdown(schemas) {
+            const schemaSelect = document.getElementById('schema-select');
+            schemaSelect.innerHTML = '<option value="">Select a schema...</option>';
+            
+            schemas.forEach(schema => {
+                const option = document.createElement('option');
+                option.value = schema;
+                option.textContent = schema;
+                schemaSelect.appendChild(option);
+            });
+            
+            // Add "All schemas" option
+            const allOption = document.createElement('option');
+            allOption.value = '_ALL_';
+            allOption.textContent = '🌐 All Schemas';
+            schemaSelect.appendChild(allOption);
+        }
+
+        function discoverAllTables(connectionData) {
+            fetch('/api/discover-tables-by-schema', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(connectionData),
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.error) {
+                    document.getElementById('discovery-status').innerHTML = `<span class="error">Error loading tables: ${result.error}</span>`;
+                } else {
+                    tablesBySchema = result.tables_by_schema;
+                    discoveredTables = result.tables.map(t => t.full_name);
+                    
+                    document.getElementById('discovery-status').innerHTML = 
+                        `<span class="success">Found ${result.total_tables} tables across ${result.schema_count} schemas</span>`;
+                }
+            })
+            .catch(error => {
+                console.error('Error loading tables:', error);
+            });
+        }
+
+        function onSchemaChange() {
+            const schemaSelect = document.getElementById('schema-select');
+            const selectedSchema = schemaSelect.value;
+            const schemaStatus = document.getElementById('schema-status');
+            
+            if (!selectedSchema) {
+                schemaStatus.innerHTML = '';
+                document.getElementById('table-list').innerHTML = '';
+                return;
+            }
+            
+            if (selectedSchema === '_ALL_') {
+                // Show all tables from all schemas
+                const allTables = [];
+                Object.keys(tablesBySchema).forEach(schema => {
+                    tablesBySchema[schema].forEach(table => {
+                        allTables.push(table.full_name);
+                    });
+                });
+                populateTableList(allTables);
+                schemaStatus.innerHTML = `Showing all ${allTables.length} tables from all schemas`;
+            } else {
+                // Show tables from selected schema
+                const schemaTables = tablesBySchema[selectedSchema] || [];
+                const tableNames = schemaTables.map(t => t.full_name);
+                populateTableList(tableNames);
+                schemaStatus.innerHTML = `Showing ${schemaTables.length} tables from schema "${selectedSchema}"`;
+            }
+            
+            // Switch to select mode and show discovered tables
+            document.querySelector('input[name="table-mode"][value="select"]').checked = true;
+            toggleTableMode();
+        }
+
         function getSelectedTables() {
             const mode = document.querySelector('input[name="table-mode"]:checked').value;
             
@@ -249,8 +337,7 @@
             fetch('/api/jobs', {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': data._csrf_token
+                    'Content-Type': 'application/json'
                 },
                 body: JSON.stringify(data),
             })

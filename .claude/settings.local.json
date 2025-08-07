@@ -11,7 +11,8 @@
       "Bash(python run_tests:*)",
       "Bash(curl:*)",
       "Bash(docker exec:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(echo:*)"
     ],
     "deny": []
   }

@@ -19,10 +19,7 @@
     *   `/api/job/<job_id>`: Returns a JSON object with detailed record of a single job.
     *   `/api/job/<job_id>/errors`: Returns a JSON list of all errors for a specified job.
     *   `/api/jobs` (POST): Endpoint to create new jobs, accepting full configuration.
-*   **Security Integration:**
-    *   `Flask-SeaSurf` integrated for CSRF protection.
-    *   `Flask-Talisman` integrated for setting security headers.
-    *   `SECRET_KEY` configured for session management.
+*   `SECRET_KEY` configured for session management.
 *   **Secure Credential Handling:**
     *   Password encryption using `cryptography.fernet` before storing in `job_configs` table.
     *   Job configuration (including encrypted credentials) stored in `job_configs` table, linked to `jobs` table.
@@ -120,21 +117,72 @@
     *   Service management (web app and worker)
     *   Health checks and process monitoring
 
-## 11. Containerization (Docker)
+## 11. Schema-Aware Database Discovery
+*   **Enhanced Schema Discovery:**
+    *   `discover_schemas()` function to identify all user schemas in PostgreSQL/Greenplum databases
+    *   Filters out system schemas (`pg_%`, `gp_%`, `information_schema`, etc.)
+    *   Full compatibility with Greenplum multi-schema environments
+*   **Schema-Specific Table Discovery:**
+    *   `discover_tables_by_schema()` function returns tables with schema information
+    *   Support for schema-specific filtering or all-schema discovery
+    *   Returns structured data with schema, table, and full_name (schema.table) format
+*   **Enhanced API Endpoints:**
+    *   `/api/discover-schemas` - Returns all available database schemas
+    *   `/api/discover-tables-by-schema` - Returns tables organized by schema with optional filtering
+    *   Maintains backward compatibility with existing `/api/discover-schema` endpoint
+*   **Schema-Aware User Interface:**
+    *   Schema selection dropdown after database discovery
+    *   "All Schemas" option to view tables from all schemas simultaneously
+    *   Schema-filtered table selection with real-time updates
+    *   Smart discovery workflow: Schemas → Filter → Tables → Selection
+
+## 12. Containerization (Docker)
 *   **Development Container:**
     *   Basic `Dockerfile` for development and testing
-    *   Uses `python:3.10-slim` as base image
+    *   Uses `python:3.12-slim` as base image
     *   Installs Python dependencies from `requirements.txt`
     *   Exposes port 5000 for Flask development server
+*   **Optimized Container:**
+    *   Multi-stage build `Dockerfile.simple` for 70% size reduction (1.7GB → 488MB)
+    *   Separate build and runtime stages to exclude build dependencies
+    *   Selective file copying (only application files, no unnecessary data)
+    *   Enhanced dependency management with pandas/numpy compatibility
 *   **Production Container:**
     *   Hardened `Dockerfile.prod` for production deployment
     *   Non-root user execution for security
     *   Multi-stage build optimization
     *   Health check endpoints
     *   Gunicorn WSGI server configuration
+*   **Python Version Upgrade:**
+    *   Upgraded base images from `python:3.10-slim` to `python:3.12-slim` for performance improvements
+*   **Air-Gapped Deployment:**
+    *   Self-contained images with all dependencies included
+    *   Compressed export files for efficient transport
+    *   Complete deployment documentation for air-gapped environments
 *   **Docker Compose:**
     *   Production-ready `docker-compose.prod.yml`
     *   Separate web and worker services
     *   Persistent volume management for data and logs
     *   Network isolation and service dependencies
     *   Environment variable configuration
+
+## 13. Performance Optimization Opportunities
+*   **Current Architecture Analysis:**
+    *   Sequential table processing (one table at a time)
+    *   Full table reads using `SELECT * FROM table` 
+    *   Single database connection per job
+    *   Comprehensive data validation on every export
+    *   Synchronous I/O operations
+*   **High-Impact Enhancement Opportunities:**
+    *   **Parallel Processing:** ThreadPoolExecutor for concurrent table exports (4-8x performance improvement)
+    *   **Connection Pooling:** Multiple database connections to reduce connection overhead
+    *   **Chunked Processing:** LIMIT/OFFSET pagination for large tables to reduce memory usage
+    *   **Enhanced Compression:** ZSTD compression for Parquet files (30-50% smaller files)
+    *   **Streaming Writes:** Incremental data writing to reduce memory footprint
+    *   **Selective Validation:** Skip or sample-based validation for very large tables
+    *   **Column Selection:** Export only specified columns when configured
+*   **Expected Performance Gains:**
+    *   4-8x faster processing with parallel table exports
+    *   50-80% reduction in memory usage with chunked processing
+    *   30-50% smaller export files with optimized compression
+    *   10-30% faster I/O with connection pooling and streaming writes

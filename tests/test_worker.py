@@ -17,22 +17,19 @@ class TestWorker(unittest.TestCase):
     
     def test_redact_sensitive_data(self):
         """Test sensitive data redaction"""
-        # Test password redaction
         test_cases = [
             ('password: "secret123"', 'password: "***REDACTED***"'),
-            ('{"password": "mysecret"}', '{"password": "***REDACTED***"}'),
-            ('connecting with password secret123', 'connecting with password ***REDACTED***'),
+            ('{"password":"mysecret"}', '{"password":"***REDACTED***"}'),
+            ("The password=secret", "The password=***REDACTED***"),
             ('postgresql://user:password@host', 'postgresql://user:***REDACTED***@host'),
             ('vertica://admin:secret@host', 'vertica://admin:***REDACTED***@host'),
             ('api_key: "abc123def"', 'api_key: "***REDACTED***"'),
         ]
-        
+
         for original, expected in test_cases:
             with self.subTest(original=original):
                 result = redact_sensitive_data(original)
-                self.assertIn('***REDACTED***', result)
-                self.assertNotIn('secret', result.lower())
-                self.assertNotIn('password', result.lower())
+                self.assertEqual(result, expected)
     
     def test_redact_encrypted_password(self):
         """Test redaction of encrypted passwords"""

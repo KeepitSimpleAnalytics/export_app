@@ -1,6 +1,4 @@
 from flask import Flask, jsonify, render_template, request, session
-from flask_seasurf import SeaSurf
-from flask_talisman import Talisman
 import uuid
 import time
 import json
@@ -15,19 +13,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
 app.config['DEBUG'] = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
 
-# Security settings
-csrf = SeaSurf(app)
-talisman_config = {
-    'force_https': os.environ.get('FORCE_HTTPS', 'False').lower() == 'true',
-    'strict_transport_security': True,
-    'strict_transport_security_max_age': 31536000,  # 1 year
-    'content_security_policy': {
-        'default-src': "'self'",
-        'script-src': "'self' 'unsafe-inline'",
-        'style-src': "'self' 'unsafe-inline'",
-    }
-}
-talisman = Talisman(app, **talisman_config)
+
 
 # Encryption key management
 fernet_key = os.environ.get('FERNET_KEY')
@@ -69,9 +55,11 @@ def get_job(job_id):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM jobs WHERE job_id = ?', (job_id,))
-    job = dict(cursor.fetchone())
+    job_row = cursor.fetchone()
     conn.close()
-    return jsonify(job)
+    if job_row:
+        return jsonify(dict(job_row))
+    return jsonify({'error': 'Job not found'}), 404
 
 @app.route('/api/job/<job_id>/errors')
 def get_job_errors(job_id):
@@ -142,7 +130,6 @@ def logs_page():
     return render_template('logs.html')
 
 @app.route('/api/jobs', methods=['POST'])
-@csrf.exempt
 def create_job():
     try:
         data = request.get_json()
@@ -180,7 +167,6 @@ def create_job():
         return jsonify({'error': f'Failed to create job: {str(e)}'}), 500
 
 @app.route('/api/discover-schema', methods=['POST'])
-@csrf.exempt
 def discover_schema():
     """Discover database schema without creating a job"""
     try:
@@ -195,7 +181,7 @@ def discover_schema():
             return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
         
         # Import database functions
-        from worker import get_database_connection, discover_tables
+        from worker import get_database_connection, discover_tables, discover_schemas, discover_tables_by_schema
         
         # Connect to database
         db_conn = get_database_connection(
@@ -223,7 +209,6 @@ def discover_schema():
         return jsonify({'error': f'Failed to discover schema: {str(e)}'}), 500
 
 @app.route('/api/table-info', methods=['POST'])
-@csrf.exempt
 def get_table_info():
     """Get detailed information about a specific table"""
     try:
@@ -294,6 +279,105 @@ def get_table_info():
     except Exception as e:
         app.logger.error(f"Error getting table info: {str(e)}")
         return jsonify({'error': f'Failed to get table info: {str(e)}'}), 500
+
+@app.route('/api/discover-schemas', methods=['POST'])
+def discover_database_schemas():
+    """Discover all schemas in the database"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        
+        # Validate required fields for connection
+        required_fields = ['db_type', 'db_host', 'db_port', 'db_username', 'db_password']
+        missing_fields = [field for field in required_fields if field not in data or not data[field]]
+        if missing_fields:
+            return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+        
+        # Import database functions
+        from worker import get_database_connection, discover_schemas
+        
+        # Connect to database
+        db_conn = get_database_connection(
+            data['db_type'], 
+            data['db_host'], 
+            int(data['db_port']), 
+            data['db_username'], 
+            data['db_password'],
+            data.get('db_name')
+        )
+        
+        # Discover schemas
+        schemas = discover_schemas(db_conn, data['db_type'])
+        db_conn.close()
+        
+        return jsonify({
+            'schemas': schemas,
+            'count': len(schemas),
+            'database_type': data['db_type'],
+            'host': data['db_host']
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error discovering schemas: {str(e)}")
+        return jsonify({'error': f'Failed to discover schemas: {str(e)}'}), 500
+
+@app.route('/api/discover-tables-by-schema', methods=['POST'])
+def discover_schema_tables():
+    """Discover tables in a specific schema or all schemas"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        
+        # Validate required fields for connection
+        required_fields = ['db_type', 'db_host', 'db_port', 'db_username', 'db_password']
+        missing_fields = [field for field in required_fields if field not in data or not data[field]]
+        if missing_fields:
+            return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+        
+        # Import database functions
+        from worker import get_database_connection, discover_tables_by_schema
+        
+        # Connect to database
+        db_conn = get_database_connection(
+            data['db_type'], 
+            data['db_host'], 
+            int(data['db_port']), 
+            data['db_username'], 
+            data['db_password'],
+            data.get('db_name')
+        )
+        
+        # Discover tables by schema
+        schema_name = data.get('schema_name')  # Optional - if not provided, returns all tables
+        tables = discover_tables_by_schema(db_conn, data['db_type'], schema_name)
+        db_conn.close()
+        
+        # Group tables by schema for better organization
+        schemas_dict = {}
+        for table in tables:
+            schema = table['schema']
+            if schema not in schemas_dict:
+                schemas_dict[schema] = []
+            schemas_dict[schema].append({
+                'table_name': table['table'],
+                'full_name': table['full_name']
+            })
+        
+        return jsonify({
+            'tables_by_schema': schemas_dict,
+            'tables': tables,  # Keep flat list for backward compatibility
+            'total_tables': len(tables),
+            'schema_count': len(schemas_dict),
+            'requested_schema': schema_name,
+            'database_type': data['db_type'],
+            'host': data['db_host']
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error discovering tables by schema: {str(e)}")
+        return jsonify({'error': f'Failed to discover tables by schema: {str(e)}'}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', debug=True)

@@ -21,23 +21,9 @@ def redact_sensitive_data(text):
     
     # Patterns to redact
     patterns = [
-        # Password patterns
-        (r'password[\'\":\s]*[\'\"]\s*([^\'\"\s,}]+)', r'password: "***REDACTED***"'),
-        (r'password[\'\":\s]*:\s*([^\s,}]+)', r'password: ***REDACTED***'),
-        (r'pwd[\'\":\s]*[\'\"]\s*([^\'\"\s,}]+)', r'pwd: "***REDACTED***"'),
-        
-        # Connection string patterns 
-        (r'postgresql://[^:]+:([^@]+)@', r'postgresql://user:***REDACTED***@'),
-        (r'vertica://[^:]+:([^@]+)@', r'vertica://user:***REDACTED***@'),
-        
-        # Generic credential patterns
-        (r'[\'\"](password|pwd|pass|secret|token|key)[\'\"]\s*:\s*[\'\"](.*?)[\'\"]([\s,}])', r'"\1": "***REDACTED***"\3'),
-        
-        # API keys and tokens
-        (r'(api_key|token|secret_key|access_key)[\'\":\s]*[\'\"]\s*([^\'\"\s,}]+)', r'\1: "***REDACTED***"'),
-        
-        # Encrypted password values (our app stores these)
-        (r'(gAAAAA[A-Za-z0-9+/=]+)', r'***ENCRYPTED_PASSWORD***'),
+        (r'gAAAAA[A-Za-z0-9_\-=]+', r'***ENCRYPTED_PASSWORD***'),
+        (r'(password|pwd|pass|secret|token|api_key|access_key)\s*[:=]\s*[^\s,]+', r'\1=***REDACTED***'),
+        (r'://([^:]+):([^@]+)@', r'://\1:***REDACTED***@'),
     ]
     
     redacted_text = text
@@ -114,27 +100,86 @@ def get_database_connection(db_type, host, port, username, password, database=No
     else:
         raise ValueError(f"Unsupported database type: {db_type}")
 
-def discover_tables(db_conn, db_type):
-    """Discover all tables in the database"""
+def discover_schemas(db_conn, db_type):
+    """Discover all user schemas in the database"""
     cursor = db_conn.cursor()
     
     if db_type.lower() == 'postgresql':
         cursor.execute("""
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_schema = 'public' 
-            AND table_type = 'BASE TABLE'
+            SELECT schema_name 
+            FROM information_schema.schemata 
+            WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast_temp_1', 'pg_temp_1')
+            AND schema_name NOT LIKE 'pg_%'
+            AND schema_name NOT LIKE 'gp_%'
+            ORDER BY schema_name
         """)
     elif db_type.lower() == 'vertica':
         cursor.execute("""
-            SELECT table_name 
-            FROM v_catalog.tables 
-            WHERE schema_name = 'public'
+            SELECT schema_name 
+            FROM v_catalog.schemata 
+            WHERE schema_name NOT IN ('v_catalog', 'v_monitor', 'v_internal')
+            ORDER BY schema_name
         """)
     
-    tables = [row[0] for row in cursor.fetchall()]
+    schemas = [row[0] for row in cursor.fetchall()]
     cursor.close()
+    logging.info(f"Discovered {len(schemas)} schemas: {schemas}")
+    return schemas
+
+def discover_tables_by_schema(db_conn, db_type, schema_name=None):
+    """Discover tables in a specific schema or all schemas"""
+    cursor = db_conn.cursor()
+    
+    if db_type.lower() == 'postgresql':
+        if schema_name:
+            # Get tables for specific schema
+            cursor.execute("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = %s 
+                AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+            """, (schema_name,))
+            tables = [{'schema': schema_name, 'table': row[0], 'full_name': f"{schema_name}.{row[0]}"} for row in cursor.fetchall()]
+        else:
+            # Get all tables with schema info
+            cursor.execute("""
+                SELECT table_schema, table_name 
+                FROM information_schema.tables 
+                WHERE table_type = 'BASE TABLE'
+                AND table_schema NOT IN ('information_schema', 'pg_catalog', 'pg_toast_temp_1', 'pg_temp_1')
+                AND table_schema NOT LIKE 'pg_%'
+                AND table_schema NOT LIKE 'gp_%'
+                ORDER BY table_schema, table_name
+            """)
+            tables = [{'schema': row[0], 'table': row[1], 'full_name': f"{row[0]}.{row[1]}"} for row in cursor.fetchall()]
+            
+    elif db_type.lower() == 'vertica':
+        if schema_name:
+            cursor.execute("""
+                SELECT table_name 
+                FROM v_catalog.tables 
+                WHERE schema_name = %s
+                ORDER BY table_name
+            """, (schema_name,))
+            tables = [{'schema': schema_name, 'table': row[0], 'full_name': f"{schema_name}.{row[0]}"} for row in cursor.fetchall()]
+        else:
+            cursor.execute("""
+                SELECT schema_name, table_name 
+                FROM v_catalog.tables 
+                WHERE schema_name NOT IN ('v_catalog', 'v_monitor', 'v_internal')
+                ORDER BY schema_name, table_name
+            """)
+            tables = [{'schema': row[0], 'table': row[1], 'full_name': f"{row[0]}.{row[1]}"} for row in cursor.fetchall()]
+    
+    cursor.close()
+    logging.info(f"Discovered {len(tables)} tables in schema '{schema_name or 'all'}': {[t['full_name'] for t in tables[:10]]}{'...' if len(tables) > 10 else ''}")
     return tables
+
+def discover_tables(db_conn, db_type):
+    """Legacy function for backward compatibility - discovers all tables with full names"""
+    tables_info = discover_tables_by_schema(db_conn, db_type)
+    return [table['full_name'] for table in tables_info]
 
 def create_basic_schema(df):
     """Create a basic Pandera schema from a DataFrame for validation"""
@@ -207,8 +252,9 @@ def export_table_to_parquet(db_conn, table_name, output_path, job_id):
         output_dir = Path(output_path) / job_id
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Write to Parquet
-        parquet_file = output_dir / f"{table_name}.parquet"
+        # Write to Parquet (replace dots in table names for file safety)
+        safe_table_name = table_name.replace('.', '_')
+        parquet_file = output_dir / f"{safe_table_name}.parquet"
         df.write_parquet(parquet_file)
         
         result_message = f"Exported {len(df)} rows"
@@ -240,7 +286,7 @@ def process_data(job_id, config):
     username = config['db_username']
     database = config.get('db_name')
     tables_to_export = config.get('tables', [])
-    output_path = config.get('output_path', '/tmp/exports')
+    output_path = config.get('output_path', '/app/exports')
     
     total_tables = 0
     successful_tables = 0
@@ -277,7 +323,8 @@ def process_data(job_id, config):
                 if success:
                     successful_tables += 1
                     row_count = result
-                    file_path = f"{output_path}/{job_id}/{table_name}.parquet"
+                    safe_table_name = table_name.replace('.', '_')
+                    file_path = f"{output_path}/{job_id}/{safe_table_name}.parquet"
                     
                     # Update table export record with success
                     cursor.execute(

@@ -1,7 +1,7 @@
 Flask
-Flask-SeaSurf
-Flask-Talisman
 polars
+pandas
+numpy
 duckdb
 pandera
 psycopg2-binary
