@@ -1,0 +1,54 @@
+# Air-gapped ADU Export Application Dockerfile
+# Optimized for port 8504 deployment
+FROM python:3.12-slim
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy the requirements file first for better caching
+COPY adu/requirements.txt .
+
+# Install system dependencies, Redis, and Python packages in one layer
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    redis-server \
+    && pip install --no-cache-dir -r requirements.txt \
+    && apt-get remove -y gcc g++ \
+    && apt-get autoremove -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the rest of the application code
+COPY . .
+
+# Make the startup script executable
+RUN chmod +x start.sh
+
+# Create necessary directories
+RUN mkdir -p /app/exports /app/logs /tmp/adu
+
+# Set permissions
+RUN chmod 755 /app/exports /app/logs /tmp/adu
+
+# Note: EXPOSE is not needed for host networking but kept for documentation
+EXPOSE 8504
+
+# Define environment variables for air-gapped deployment with host networking
+ENV FLASK_APP=adu/app.py
+ENV FLASK_RUN_HOST=0.0.0.0
+ENV FLASK_RUN_PORT=8504
+ENV FLASK_ENV=production
+ENV FLASK_DEBUG=False
+ENV PYTHONPATH=/app
+ENV ADU_OUTPUT_PATH=/app/exports
+ENV ADU_LOG_PATH=/app/logs
+ENV ADU_DB_PATH=/tmp/adu/adu.db
+
+# Health check (uses localhost since host networking maps directly)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8504/ || exit 1
+
+# Use the existing startup script
+CMD ["./start.sh"]

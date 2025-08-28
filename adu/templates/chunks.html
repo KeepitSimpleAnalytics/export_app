@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chunk Processing Monitor</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .nav-link { display: inline-block; margin: 1em 0; color: #007bff; text-decoration: none; }
+        .nav-link:hover { text-decoration: underline; }
+        
+        .filters { 
+            background-color: #f8f9fa; 
+            padding: 1em; 
+            border-radius: 8px; 
+            margin: 1em 0; 
+            display: flex; 
+            gap: 1em; 
+            align-items: center; 
+            flex-wrap: wrap; 
+        }
+        .filters label { font-weight: bold; margin-right: 0.5em; }
+        .filters select, .filters input { padding: 0.5em; border-radius: 4px; border: 1px solid #ddd; }
+        .filters button { padding: 0.5em 1em; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .filters button:hover { background-color: #0056b3; }
+        
+        .summary-cards { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
+            gap: 1em; 
+            margin: 1em 0; 
+        }
+        .summary-card { 
+            background: linear-gradient(135deg, #f8f9fa, #e9ecef); 
+            padding: 1em; 
+            border-radius: 8px; 
+            text-align: center; 
+            border: 1px solid #dee2e6; 
+        }
+        .summary-card h3 { margin: 0 0 0.5em 0; font-size: 1.1em; color: #495057; }
+        .summary-card .value { font-size: 2em; font-weight: bold; margin: 0.2em 0; }
+        .summary-card .label { font-size: 0.9em; color: #6c757d; }
+        
+        .processing { color: #ffc107; }
+        .completed { color: #28a745; }
+        .failed { color: #dc3545; }
+        .total { color: #007bff; }
+        
+        table { width: 100%; border-collapse: collapse; margin: 1em 0; }
+        th, td { border: 1px solid #ddd; padding: 0.5em; text-align: left; font-size: 0.9em; }
+        th { background-color: #f5f5f5; position: sticky; top: 0; }
+        
+        .status-processing { color: #ffc107; font-weight: bold; }
+        .status-completed { color: #28a745; font-weight: bold; }
+        .status-failed { color: #dc3545; font-weight: bold; }
+        .status-queued { color: #007bff; font-weight: bold; }
+        
+        .chunk-progress { 
+            display: flex; 
+            align-items: center; 
+            gap: 0.5em; 
+        }
+        .chunk-bar { 
+            width: 100px; 
+            height: 16px; 
+            background-color: #f0f0f0; 
+            border-radius: 8px; 
+            overflow: hidden; 
+        }
+        .chunk-fill { 
+            height: 100%; 
+            background-color: #28a745; 
+            transition: width 0.3s ease; 
+        }
+        .chunk-text { font-size: 0.8em; white-space: nowrap; }
+        
+        .auto-refresh { 
+            display: flex; 
+            align-items: center; 
+            gap: 0.5em; 
+            margin: 1em 0; 
+            font-size: 0.9em; 
+        }
+        
+        .table-container { 
+            max-height: 70vh; 
+            overflow-y: auto; 
+            border: 1px solid #ddd; 
+            border-radius: 4px; 
+        }
+        
+        .highlight-processing { background-color: #fff3cd !important; }
+        .highlight-active { background-color: #d1ecf1 !important; }
+        
+        .no-data { 
+            text-align: center; 
+            padding: 2em; 
+            color: #6c757d; 
+            font-style: italic; 
+        }
+        
+        .refresh-indicator { 
+            color: #28a745; 
+            font-size: 0.9em; 
+            margin-left: 1em; 
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/history" class="nav-link">← Back to Job History</a>
+        <a href="/logs" class="nav-link">View Worker Logs</a>
+        
+        <h1>Chunk Processing Monitor <span id="refresh-indicator" class="refresh-indicator"></span></h1>
+        
+        <div class="auto-refresh">
+            <input type="checkbox" id="auto-refresh" checked> 
+            <label for="auto-refresh">Auto-refresh every 3 seconds</label>
+        </div>
+        
+        <div class="filters">
+            <label for="job-filter">Job ID:</label>
+            <select id="job-filter">
+                <option value="">All Jobs</option>
+            </select>
+            
+            <label for="status-filter">Status:</label>
+            <select id="status-filter">
+                <option value="">All Statuses</option>
+                <option value="processing">Processing Only</option>
+                <option value="completed">Completed</option>
+                <option value="failed">Failed</option>
+                <option value="queued">Queued</option>
+            </select>
+            
+            <label for="chunk-filter">Chunk Type:</label>
+            <select id="chunk-filter">
+                <option value="">All Tables</option>
+                <option value="partitioned">Partitioned (Multi-chunk)</option>
+                <option value="single">Single Chunk</option>
+                <option value="active">Currently Processing</option>
+            </select>
+            
+            <button onclick="applyFilters()">Apply Filters</button>
+            <button onclick="clearFilters()">Clear</button>
+        </div>
+        
+        <div id="summary-section" class="summary-cards">
+            <!-- Summary cards will be populated here -->
+        </div>
+        
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Job ID</th>
+                        <th>Table Name</th>
+                        <th>Status</th>
+                        <th>Chunk Progress</th>
+                        <th>Total Chunks</th>
+                        <th>Completed</th>
+                        <th>Processing</th>
+                        <th>Remaining</th>
+                        <th>Partitioned</th>
+                        <th>Row Count</th>
+                        <th>Start Time</th>
+                        <th>End Time</th>
+                    </tr>
+                </thead>
+                <tbody id="chunks-tbody">
+                    <!-- Chunk details will be populated here -->
+                </tbody>
+            </table>
+        </div>
+        
+        <div id="no-data" class="no-data" style="display: none;">
+            No chunk data available. Jobs may be queued or no active processing.
+        </div>
+    </div>
+
+    <script>
+        let refreshInterval;
+        let allChunksData = [];
+        let activeJobs = new Set();
+        
+        // Initialize page
+        document.addEventListener('DOMContentLoaded', function() {
+            loadJobs();
+            loadChunks();
+            setupAutoRefresh();
+        });
+        
+        async function loadJobs() {
+            try {
+                const response = await fetch('/api/history');
+                const jobs = await response.json();
+                
+                const jobFilter = document.getElementById('job-filter');
+                jobFilter.innerHTML = '<option value="">All Jobs</option>';
+                
+                // Add recent jobs to filter
+                jobs.slice(0, 20).forEach(job => {
+                    const option = document.createElement('option');
+                    option.value = job.job_id;
+                    option.textContent = `${job.job_id.substring(0, 8)}... (${job.overall_status})`;
+                    jobFilter.appendChild(option);
+                    
+                    if (job.overall_status === 'running') {
+                        activeJobs.add(job.job_id);
+                    }
+                });
+                
+                // Auto-select first running job if any
+                if (activeJobs.size > 0) {
+                    jobFilter.value = Array.from(activeJobs)[0];
+                }
+                
+            } catch (error) {
+                console.error('Error loading jobs:', error);
+            }
+        }
+        
+        async function loadChunks() {
+            const refreshIndicator = document.getElementById('refresh-indicator');
+            refreshIndicator.textContent = '⟳ Refreshing...';
+            
+            try {
+                const selectedJob = document.getElementById('job-filter').value;
+                
+                if (selectedJob) {
+                    // Load specific job chunks
+                    const response = await fetch(`/api/job/${selectedJob}/chunks`);
+                    const data = await response.json();
+                    
+                    allChunksData = data.tables.map(table => ({
+                        ...table,
+                        job_id: selectedJob
+                    }));
+                    
+                    updateSummary(data.summary);
+                } else {
+                    // Load all active jobs' chunks
+                    allChunksData = [];
+                    let globalSummary = {
+                        total_tables: 0,
+                        processing_tables: 0,
+                        completed_tables: 0,
+                        failed_tables: 0,
+                        total_chunks: 0,
+                        completed_chunks: 0,
+                        processing_chunks: 0
+                    };
+                    
+                    for (const jobId of activeJobs) {
+                        try {
+                            const response = await fetch(`/api/job/${jobId}/chunks`);
+                            const data = await response.json();
+                            
+                            const jobChunks = data.tables.map(table => ({
+                                ...table,
+                                job_id: jobId
+                            }));
+                            
+                            allChunksData.push(...jobChunks);
+                            
+                            // Aggregate summary
+                            globalSummary.total_tables += data.summary.total_tables;
+                            globalSummary.processing_tables += data.summary.processing_tables;
+                            globalSummary.completed_tables += data.summary.completed_tables;
+                            globalSummary.failed_tables += data.summary.failed_tables;
+                            globalSummary.total_chunks += data.summary.total_chunks;
+                            globalSummary.completed_chunks += data.summary.completed_chunks;
+                            globalSummary.processing_chunks += data.summary.processing_chunks;
+                            
+                        } catch (error) {
+                            console.error(`Error loading chunks for job ${jobId}:`, error);
+                        }
+                    }
+                    
+                    updateSummary(globalSummary);
+                }
+                
+                applyFilters();
+                refreshIndicator.textContent = '';
+                
+            } catch (error) {
+                console.error('Error loading chunks:', error);
+                refreshIndicator.textContent = '❌ Error';
+                setTimeout(() => refreshIndicator.textContent = '', 3000);
+            }
+        }
+        
+        function updateSummary(summary) {
+            const summarySection = document.getElementById('summary-section');
+            summarySection.innerHTML = `
+                <div class="summary-card">
+                    <h3>Total Tables</h3>
+                    <div class="value total">${summary.total_tables}</div>
+                    <div class="label">All tables</div>
+                </div>
+                <div class="summary-card">
+                    <h3>Processing</h3>
+                    <div class="value processing">${summary.processing_tables}</div>
+                    <div class="label">Active tables</div>
+                </div>
+                <div class="summary-card">
+                    <h3>Completed</h3>
+                    <div class="value completed">${summary.completed_tables}</div>
+                    <div class="label">Finished tables</div>
+                </div>
+                <div class="summary-card">
+                    <h3>Total Chunks</h3>
+                    <div class="value total">${summary.total_chunks}</div>
+                    <div class="label">All chunks</div>
+                </div>
+                <div class="summary-card">
+                    <h3>Completed Chunks</h3>
+                    <div class="value completed">${summary.completed_chunks}</div>
+                    <div class="label">Finished chunks</div>
+                </div>
+                <div class="summary-card">
+                    <h3>Processing Chunks</h3>
+                    <div class="value processing">${summary.processing_chunks}</div>
+                    <div class="label">Active chunks</div>
+                </div>
+            `;
+        }
+        
+        function applyFilters() {
+            const statusFilter = document.getElementById('status-filter').value;
+            const chunkFilter = document.getElementById('chunk-filter').value;
+            
+            let filteredData = allChunksData;
+            
+            // Apply status filter
+            if (statusFilter) {
+                filteredData = filteredData.filter(table => table.status === statusFilter);
+            }
+            
+            // Apply chunk type filter
+            if (chunkFilter === 'partitioned') {
+                filteredData = filteredData.filter(table => table.partitioned === true);
+            } else if (chunkFilter === 'single') {
+                filteredData = filteredData.filter(table => table.partitioned === false);
+            } else if (chunkFilter === 'active') {
+                filteredData = filteredData.filter(table => table.status === 'processing');
+            }
+            
+            displayChunks(filteredData);
+        }
+        
+        function displayChunks(chunks) {
+            const tbody = document.getElementById('chunks-tbody');
+            const noData = document.getElementById('no-data');
+            
+            if (chunks.length === 0) {
+                tbody.innerHTML = '';
+                noData.style.display = 'block';
+                return;
+            }
+            
+            noData.style.display = 'none';
+            
+            tbody.innerHTML = chunks.map(table => {
+                const chunkProgress = table.chunk_count > 0 ? 
+                    (table.chunks_completed / table.chunk_count) * 100 : 0;
+                
+                const isProcessing = table.status === 'processing';
+                const rowClass = isProcessing ? 'highlight-processing' : '';
+                
+                return `
+                    <tr class="${rowClass}">
+                        <td title="${table.job_id}">${table.job_id.substring(0, 8)}...</td>
+                        <td>${table.table_name}</td>
+                        <td class="status-${table.status}">${table.status}</td>
+                        <td>
+                            <div class="chunk-progress">
+                                <div class="chunk-bar">
+                                    <div class="chunk-fill" style="width: ${chunkProgress}%"></div>
+                                </div>
+                                <span class="chunk-text">${Math.round(chunkProgress)}%</span>
+                            </div>
+                        </td>
+                        <td>${table.chunk_count || 1}</td>
+                        <td class="completed">${table.chunks_completed || 0}</td>
+                        <td class="processing">${isProcessing ? (table.chunks_remaining || 0) : 0}</td>
+                        <td>${table.chunks_remaining || 0}</td>
+                        <td>${table.partitioned ? 'Yes' : 'No'}</td>
+                        <td>${table.row_count ? table.row_count.toLocaleString() : 'N/A'}</td>
+                        <td>${table.start_time || 'N/A'}</td>
+                        <td>${table.end_time || 'N/A'}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+        
+        function clearFilters() {
+            document.getElementById('job-filter').value = '';
+            document.getElementById('status-filter').value = '';
+            document.getElementById('chunk-filter').value = '';
+            applyFilters();
+        }
+        
+        function setupAutoRefresh() {
+            const autoRefreshCheckbox = document.getElementById('auto-refresh');
+            
+            function toggleAutoRefresh() {
+                if (autoRefreshCheckbox.checked) {
+                    refreshInterval = setInterval(loadChunks, 3000);
+                } else {
+                    if (refreshInterval) {
+                        clearInterval(refreshInterval);
+                        refreshInterval = null;
+                    }
+                }
+            }
+            
+            autoRefreshCheckbox.addEventListener('change', toggleAutoRefresh);
+            toggleAutoRefresh(); // Start initial auto-refresh
+        }
+        
+        // Event listeners
+        document.getElementById('job-filter').addEventListener('change', loadChunks);
+    </script>
+</body>
+</html>

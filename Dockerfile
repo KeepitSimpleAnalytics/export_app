@@ -13,12 +13,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application code into the container at /app
 COPY . .
 
+# Make the startup scripts executable
+RUN chmod +x start.sh start_production.sh
+
 # Make port 5000 available to the world outside this container
 EXPOSE 5000
 
 # Define environment variables
 ENV FLASK_APP=adu/app.py
 ENV FLASK_RUN_HOST=0.0.0.0
+ENV PYTHONPATH=/app
 
-# Run app.py when the container launches
-CMD ["flask", "run"]
+# Run the production startup script when the container launches
+CMD ["./start_production.sh"]

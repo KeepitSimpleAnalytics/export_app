@@ -22,6 +22,10 @@
         .stat-box { padding: 1em; border: 1px solid #ddd; background-color: #f9f9f9; text-align: center; }
         .nav-link { display: inline-block; margin: 1em 0; color: #007bff; text-decoration: none; }
         .nav-link:hover { text-decoration: underline; }
+        .cancel-btn { background-color: #dc3545; color: white; border: none; padding: 0.5em 1em; border-radius: 3px; cursor: pointer; margin-left: 1em; }
+        .cancel-btn:hover { background-color: #c82333; }
+        .cancel-btn:disabled { background-color: #6c757d; cursor: not-allowed; }
+        .status-cancelled { color: #6c757d; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -30,7 +34,7 @@
         <a href="/logs" class="nav-link">View Worker Logs</a>
         <a href="#" class="nav-link" onclick="viewJobLogs()">View Logs for This Job</a>
         
-        <h1>Job Details</h1>
+        <h1>Job Details <button id="cancel-btn" class="cancel-btn" onclick="cancelJob()" style="display: none;">Cancel Job</button></h1>
         
         <div class="section">
             <h2>Job Information</h2>
@@ -61,6 +65,9 @@
                         <th>Table Name</th>
                         <th>Status</th>
                         <th>Row Count</th>
+                        <th>Export Type</th>
+                        <th>Files</th>
+                        <th>Size (MB)</th>
                         <th>File Path</th>
                         <th>Start Time</th>
                         <th>End Time</th>
@@ -97,6 +104,41 @@
             window.open(`/logs?job_id=${job_id}`, '_blank');
         }
 
+        async function cancelJob() {
+            if (!confirm(`Are you sure you want to cancel job ${job_id}?`)) {
+                return;
+            }
+            
+            const cancelBtn = document.getElementById('cancel-btn');
+            cancelBtn.disabled = true;
+            cancelBtn.textContent = 'Cancelling...';
+            
+            try {
+                const response = await fetch(`/api/job/${job_id}/cancel`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    alert(`Job ${job_id} has been cancelled successfully.`);
+                    location.reload(); // Refresh the page to show updated status
+                } else {
+                    alert(`Failed to cancel job: ${result.error}`);
+                    cancelBtn.disabled = false;
+                    cancelBtn.textContent = 'Cancel Job';
+                }
+            } catch (error) {
+                console.error('Error cancelling job:', error);
+                alert('Error cancelling job. Please try again.');
+                cancelBtn.disabled = false;
+                cancelBtn.textContent = 'Cancel Job';
+            }
+        }
+
         // Load job details
         fetch(`/api/job/${job_id}`)
             .then(response => response.json())
@@ -116,6 +158,12 @@
                         <div>${job.end_time || 'N/A'}</div>
                     </div>
                 `;
+                
+                // Show cancel button if job can be cancelled
+                const cancelBtn = document.getElementById('cancel-btn');
+                if (job.overall_status === 'queued' || job.overall_status === 'running') {
+                    cancelBtn.style.display = 'inline-block';
+                }
             });
 
         // Load job configuration
@@ -145,15 +193,17 @@
                 `;
             });
 
-        // Load table export status
-        fetch(`/api/job/${job_id}/tables`)
+        // Load table export status with enhanced details
+        fetch(`/api/job/${job_id}/export-details`)
             .then(response => response.json())
-            .then(tables => {
+            .then(data => {
                 const tbody = document.getElementById('tables-tbody');
                 const summaryDiv = document.getElementById('export-summary');
                 
+                const tables = data.tables || [];
+                
                 if (tables.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7">No table export data available</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="10">No table export data available</td></tr>';
                     summaryDiv.innerHTML = '<p>No export summary available</p>';
                     return;
                 }
@@ -163,6 +213,8 @@
                 const failed = tables.filter(t => t.status === 'failed').length;
                 const processing = tables.filter(t => t.status === 'processing').length;
                 const totalRows = tables.filter(t => t.row_count).reduce((sum, t) => sum + t.row_count, 0);
+                const totalSize = tables.filter(t => t.total_size_mb).reduce((sum, t) => sum + t.total_size_mb, 0);
+                const partitionedTables = tables.filter(t => t.partitioned).length;
 
                 summaryDiv.innerHTML = `
                     <div class="summary-stats">
@@ -186,22 +238,79 @@
                             <h3>${totalRows.toLocaleString()}</h3>
                             <p>Total Rows Exported</p>
                         </div>
+                        <div class="stat-box">
+                            <h3>${totalSize.toFixed(1)} MB</h3>
+                            <p>Total Export Size</p>
+                        </div>
+                        <div class="stat-box">
+                            <h3>${partitionedTables}</h3>
+                            <p>Partitioned Tables</p>
+                        </div>
                     </div>
+                    <p><strong>Output Path:</strong> ${data.output_path}</p>
                 `;
 
                 tables.forEach(table => {
                     const row = document.createElement('tr');
+                    
+                    // Determine export type and file info
+                    let exportType = 'Unknown';
+                    let filesInfo = 'N/A';
+                    let sizeInfo = 'N/A';
+                    
+                    if (table.status === 'completed') {
+                        if (table.partitioned) {
+                            exportType = `Partitioned (${table.chunk_count} files)`;
+                            filesInfo = table.files ? table.files.join(', ') : `${table.chunk_count} chunks`;
+                        } else {
+                            exportType = 'Single File';
+                            filesInfo = table.files ? table.files[0] : 'data.parquet';
+                        }
+                        
+                        if (table.total_size_mb !== undefined) {
+                            sizeInfo = table.total_size_mb.toFixed(2);
+                        }
+                    }
+                    
                     row.innerHTML = `
                         <td>${table.table_name}</td>
                         <td class="status-${table.status}">${table.status}</td>
                         <td>${table.row_count ? table.row_count.toLocaleString() : 'N/A'}</td>
+                        <td>${exportType}</td>
+                        <td title="${filesInfo}">${filesInfo.length > 50 ? filesInfo.substring(0, 50) + '...' : filesInfo}</td>
+                        <td>${sizeInfo}</td>
                         <td>${table.file_path || 'N/A'}</td>
                         <td>${table.start_time || 'N/A'}</td>
                         <td>${table.end_time || 'N/A'}</td>
-                        <td>${table.error_message || ''}</td>
+                        <td>${table.error_message || table.error || ''}</td>
                     `;
                     tbody.appendChild(row);
                 });
+            })
+            .catch(error => {
+                console.error('Error loading export details:', error);
+                // Fallback to basic table info
+                fetch(`/api/job/${job_id}/tables`)
+                    .then(response => response.json())
+                    .then(tables => {
+                        const tbody = document.getElementById('tables-tbody');
+                        tables.forEach(table => {
+                            const row = document.createElement('tr');
+                            row.innerHTML = `
+                                <td>${table.table_name}</td>
+                                <td class="status-${table.status}">${table.status}</td>
+                                <td>${table.row_count ? table.row_count.toLocaleString() : 'N/A'}</td>
+                                <td>Legacy</td>
+                                <td>N/A</td>
+                                <td>N/A</td>
+                                <td>${table.file_path || 'N/A'}</td>
+                                <td>${table.start_time || 'N/A'}</td>
+                                <td>${table.end_time || 'N/A'}</td>
+                                <td>${table.error_message || ''}</td>
+                            `;
+                            tbody.appendChild(row);
+                        });
+                    });
             });
 
         // Load errors

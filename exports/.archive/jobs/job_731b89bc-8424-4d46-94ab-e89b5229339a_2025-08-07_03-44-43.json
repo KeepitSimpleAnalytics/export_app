@@ -1,0 +1,135 @@
+{
+  "completion_timestamp": "2025-08-07 03:44:43",
+  "strategy": "clean_with_archive",
+  "conflict_resolution": "version",
+  "moved_tables": [
+    {
+      "table": "public_movie_keyword",
+      "original_table_name": "public.movie_keyword",
+      "final_path": "/app/exports/public_movie_keyword",
+      "was_renamed": false
+    },
+    {
+      "table": "public_aka_title",
+      "original_table_name": "public.aka_title",
+      "final_path": "/app/exports/public_aka_title",
+      "was_renamed": false
+    },
+    {
+      "table": "public_role_type",
+      "original_table_name": "public.role_type",
+      "final_path": "/app/exports/public_role_type",
+      "was_renamed": false
+    },
+    {
+      "table": "public_complete_cast",
+      "original_table_name": "public.complete_cast",
+      "final_path": "/app/exports/public_complete_cast",
+      "was_renamed": false
+    },
+    {
+      "table": "public_cast_info",
+      "original_table_name": "public.cast_info",
+      "final_path": "/app/exports/public_cast_info",
+      "was_renamed": false
+    },
+    {
+      "table": "public_movie_companies",
+      "original_table_name": "public.movie_companies",
+      "final_path": "/app/exports/public_movie_companies",
+      "was_renamed": false
+    },
+    {
+      "table": "public_company_name",
+      "original_table_name": "public.company_name",
+      "final_path": "/app/exports/public_company_name",
+      "was_renamed": false
+    },
+    {
+      "table": "public_info_type",
+      "original_table_name": "public.info_type",
+      "final_path": "/app/exports/public_info_type",
+      "was_renamed": false
+    },
+    {
+      "table": "public_person_info",
+      "original_table_name": "public.person_info",
+      "final_path": "/app/exports/public_person_info",
+      "was_renamed": false
+    },
+    {
+      "table": "public_link_type",
+      "original_table_name": "public.link_type",
+      "final_path": "/app/exports/public_link_type",
+      "was_renamed": false
+    },
+    {
+      "table": "public_comp_cast_type",
+      "original_table_name": "public.comp_cast_type",
+      "final_path": "/app/exports/public_comp_cast_type",
+      "was_renamed": false
+    },
+    {
+      "table": "public_title",
+      "original_table_name": "public.title",
+      "final_path": "/app/exports/public_title",
+      "was_renamed": false
+    },
+    {
+      "table": "public_keyword",
+      "original_table_name": "public.keyword",
+      "final_path": "/app/exports/public_keyword",
+      "was_renamed": false
+    },
+    {
+      "table": "public_name",
+      "original_table_name": "public.name",
+      "final_path": "/app/exports/public_name",
+      "was_renamed": false
+    },
+    {
+      "table": "public_char_name",
+      "original_table_name": "public.char_name",
+      "final_path": "/app/exports/public_char_name",
+      "was_renamed": false
+    },
+    {
+      "table": "public_aka_name",
+      "original_table_name": "public.aka_name",
+      "final_path": "/app/exports/public_aka_name",
+      "was_renamed": false
+    },
+    {
+      "table": "public_movie_info",
+      "original_table_name": "public.movie_info",
+      "final_path": "/app/exports/public_movie_info",
+      "was_renamed": false
+    },
+    {
+      "table": "public_movie_link",
+      "original_table_name": "public.movie_link",
+      "final_path": "/app/exports/public_movie_link",
+      "was_renamed": false
+    },
+    {
+      "table": "public_movie_info_idx",
+      "original_table_name": "public.movie_info_idx",
+      "final_path": "/app/exports/public_movie_info_idx",
+      "was_renamed": false
+    },
+    {
+      "table": "public_company_type",
+      "original_table_name": "public.company_type",
+      "final_path": "/app/exports/public_company_type",
+      "was_renamed": false
+    },
+    {
+      "table": "public_kind_type",
+      "original_table_name": "public.kind_type",
+      "final_path": "/app/exports/public_kind_type",
+      "was_renamed": false
+    }
+  ],
+  "failed_tables": [],
+  "total_tables": 21
+}

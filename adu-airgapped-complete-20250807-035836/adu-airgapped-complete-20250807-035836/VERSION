@@ -1,0 +1,22 @@
+ADU Export Application - Air-Gapped Package
+==========================================
+
+Package Created: Thu Aug  7 03:59:14 AM UTC 2025
+Docker Image: adu-export:airgapped-20250807-035836
+Package Version: adu-airgapped-complete-20250807-035836
+
+Components:
+- Application: ADU Export Tool
+- Database Support: PostgreSQL, Greenplum, Vertica
+- Export Format: Parquet files
+- Web Interface: Flask-based dashboard
+- Task Queue: Celery with Redis
+- Parallel Processing: Multi-threaded exports
+
+Build Environment:
+- Host: ai-dev
+- User: rob
+- Docker Version: Docker version 28.3.3, build 980b856
+- Build Date: Thu Aug  7 03:59:14 AM UTC 2025
+
+Package Size: 578M

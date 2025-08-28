@@ -46,8 +46,27 @@
             </label>
             
             <label>
+                Content Filter:
+                <select id="content-filter">
+                    <option value="">All Logs</option>
+                    <option value="chunk">Chunk Processing</option>
+                    <option value="processing">Data Processing</option>
+                    <option value="export">Export Operations</option>
+                    <option value="error">Errors Only</option>
+                    <option value="polars">Polars Operations</option>
+                </select>
+            </label>
+            
+            <label>
                 Lines to show:
                 <select id="lines-select">
+                    <option value="50">50</option>
+                    <option value="100" selected>100</option>
+                    <option value="200">200</option>
+                    <option value="500">500</option>
+                    <option value="1000">1000</option>
+                </select>
+            </label>
                     <option value="50">50</option>
                     <option value="100" selected>100</option>
                     <option value="200">200</option>
@@ -78,6 +97,7 @@
         
         function loadLogs() {
             const jobFilter = document.getElementById('job-filter').value.trim();
+            const contentFilter = document.getElementById('content-filter').value;
             const lines = document.getElementById('lines-select').value;
             const logContainer = document.getElementById('log-container');
             const logInfo = document.getElementById('log-info');
@@ -97,16 +117,35 @@
                         return;
                     }
                     
+                    // Apply content filtering
+                    let filteredLines = data.lines;
+                    if (contentFilter) {
+                        const filterPatterns = {
+                            'chunk': /chunk|partition|split/i,
+                            'processing': /processing|export|write|read/i,
+                            'export': /export|parquet|file|save/i,
+                            'error': /error|exception|failed|traceback/i,
+                            'polars': /polars|dataframe|lazy/i
+                        };
+                        
+                        const pattern = filterPatterns[contentFilter];
+                        if (pattern) {
+                            filteredLines = data.lines.filter(line => pattern.test(line));
+                        }
+                    }
+                    
                     // Update log info
+                    const totalShowing = filteredLines.length;
                     logInfo.innerHTML = `
-                        Showing ${data.showing} of ${data.total_lines} total lines
-                        ${data.filtered ? `(filtered for job ID: ${jobFilter})` : ''}
+                        Showing ${totalShowing} of ${data.showing} lines (${data.total_lines} total)
+                        ${data.filtered ? `(job filtered: ${jobFilter})` : ''}
+                        ${contentFilter ? `(content filtered: ${contentFilter})` : ''}
                         - Last updated: ${new Date().toLocaleTimeString()}
                     `;
                     
                     // Process and display log lines
                     logContainer.innerHTML = '';
-                    data.lines.forEach(line => {
+                    filteredLines.forEach(line => {
                         const logLine = document.createElement('div');
                         logLine.className = 'log-line';
                         
@@ -119,12 +158,25 @@
                             logLine.classList.add('info');
                         }
                         
-                        // Highlight filtered job ID
+                        // Highlight filtered content
                         if (jobFilter && line.includes(jobFilter)) {
                             logLine.classList.add('highlight');
                         }
+                        if (contentFilter && contentFilter !== 'error') {
+                            const filterPatterns = {
+                                'chunk': /chunk|partition|split/gi,
+                                'processing': /processing|export|write|read/gi,
+                                'export': /export|parquet|file|save/gi,
+                                'polars': /polars|dataframe|lazy/gi
+                            };
+                            
+                            const pattern = filterPatterns[contentFilter];
+                            if (pattern) {
+                                line = line.replace(pattern, match => `<mark>${match}</mark>`);
+                            }
+                        }
                         
-                        logLine.textContent = line;
+                        logLine.innerHTML = line;
                         logContainer.appendChild(logLine);
                     });
                     
@@ -150,6 +202,7 @@
         
         // Event listeners
         document.getElementById('job-filter').addEventListener('input', loadLogs);
+        document.getElementById('content-filter').addEventListener('change', loadLogs);
         document.getElementById('lines-select').addEventListener('change', loadLogs);
         document.getElementById('auto-refresh').addEventListener('change', startAutoRefresh);
         

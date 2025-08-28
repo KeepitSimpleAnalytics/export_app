@@ -1,0 +1,26 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Copy requirements and install dependencies
+COPY adu/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application files
+COPY adu/ ./adu/
+COPY init_database.py ./
+
+# Set proper Python path and environment variables
+ENV PYTHONPATH=/app
+ENV FLASK_APP=adu.app
+ENV FLASK_DEBUG=False
+ENV FLASK_RUN_PORT=8504
+
+# Create required directories
+RUN mkdir -p exports logs adu/data
+
+# Expose port (configurable via environment)
+EXPOSE 8504
+
+# Ultra-simple startup with configurable port
+CMD ["sh", "-c", "export PYTHONPATH=/app && python init_database.py && python -m adu.worker & exec python -m flask run --host=0.0.0.0 --port=${FLASK_RUN_PORT:-8504}"]

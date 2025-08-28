@@ -17,9 +17,12 @@ def init_db():
         CREATE TABLE IF NOT EXISTS jobs (
             job_id TEXT PRIMARY KEY,
             db_username TEXT,
-            overall_status TEXT,
+            overall_status TEXT DEFAULT 'queued',
+            celery_task_id TEXT,
             start_time DATETIME,
-            end_time DATETIME
+            end_time DATETIME,
+            error_message TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
 

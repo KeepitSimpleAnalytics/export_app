@@ -1,0 +1,55 @@
+# Ignore export files and Docker images
+exports/
+*.tar
+*.tar.gz
+
+# Ignore development and documentation files
+*.md
+PLAN.md
+IMPLEMENTATION_STATUS.md
+FEATURE_SUMMARY.md
+EXPORT_ORGANIZATION_*.md
+GREENPLUM_11TB_OPTIMIZATION.md
+PRODUCTION_DEPLOYMENT_16CPU.md
+THREADING_IMPLEMENTATION.md
+16CPU_128GB_OPTIMIZATION.md
+AIRGAPPED_DEPLOYMENT_INSTRUCTIONS.md
+COMPLETE_DOCUMENTATION.md
+IMPORT_ERROR_FIX_GUIDE.md
+IMPLEMENTED.md
+
+# Ignore build scripts and other Docker files
+build_*.sh
+deploy_*.sh
+start_services.sh
+verify-image.sh
+restart_worker.sh
+monitor_threads.sh
+test_performance_setup.sh
+build-airgapped.*
+Dockerfile.*
+docker-compose.*
+supervisord.conf
+opencode.json
+
+# Ignore test files
+run_tests.py
+test_imports.py
+
+# Ignore logs and temporary files
+*.log
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Ignore data files that shouldn't be in the image
+adu/data/
+adu/logs/
+adu/exports/

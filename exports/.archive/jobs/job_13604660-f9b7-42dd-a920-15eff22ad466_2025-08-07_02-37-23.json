@@ -1,0 +1,15 @@
+{
+  "completion_timestamp": "2025-08-07 02:37:23",
+  "strategy": "clean_with_archive",
+  "conflict_resolution": "version",
+  "moved_tables": [
+    {
+      "table": "public_movie_companies",
+      "original_table_name": "public.movie_companies",
+      "final_path": "/app/exports/public_movie_companies",
+      "was_renamed": false
+    }
+  ],
+  "failed_tables": [],
+  "total_tables": 1
+}

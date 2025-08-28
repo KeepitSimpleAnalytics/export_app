@@ -43,6 +43,7 @@
                 <label for="db_type">Database Type</label>
                 <select id="db_type" name="db_type">
                     <option value="postgresql">PostgreSQL</option>
+                    <option value="greenplum">Greenplum</option>
                     <option value="vertica">Vertica</option>
                 </select>
             </div>
@@ -108,14 +109,94 @@
             <div class="form-group">
                 <label for="output_path">Output Path (default: /app/exports)</label>
                 <input type="text" id="output_path" name="output_path" value="/app/exports" placeholder="/app/exports">
+                <small>Each table will be exported to its own subdirectory within the job folder</small>
             </div>
+            
+            <div class="form-group">
+                <label for="chunk_size">Chunk Size for Large Tables</label>
+                <select id="chunk_size" name="chunk_size">
+                    <option value="100000">100,000 rows per file</option>
+                    <option value="500000">500,000 rows per file</option>
+                    <option value="1000000" selected>1,000,000 rows per file (recommended)</option>
+                    <option value="2000000">2,000,000 rows per file</option>
+                    <option value="5000000">5,000,000 rows per file</option>
+                    <option value="10000000">10,000,000 rows per file</option>
+                </select>
+                <small>Large tables will be automatically partitioned into multiple Parquet files of this size</small>
+            </div>
+            
+            <div class="form-group">
+                <label for="max_threads">Parallel Processing Threads</label>
+                <select id="max_threads" name="max_threads">
+                    <option value="1">1 thread (sequential)</option>
+                    <option value="2">2 threads</option>
+                    <option value="4">4 threads</option>
+                    <option value="6">6 threads</option>
+                    <option value="8">8 threads (recommended for 16 vCPU)</option>
+                    <option value="12" selected>12 threads (optimal for 16 vCPU + 128GB)</option>
+                    <option value="16">16 threads (maximum)</option>
+                </select>
+                <small>Number of tables to process simultaneously. With 16 vCPUs, 12 threads is optimal</small>
+            </div>
+            
+            <div class="form-group">
+                <label for="max_chunk_workers">Chunk Processing Threads (for Large Tables)</label>
+                <select id="max_chunk_workers" name="max_chunk_workers">
+                    <option value="4">4 chunk threads</option>
+                    <option value="6">6 chunk threads</option>
+                    <option value="8" selected>8 chunk threads (optimal for 16 vCPU + 128GB)</option>
+                    <option value="10">10 chunk threads</option>
+                    <option value="12">12 chunk threads (aggressive)</option>
+                    <option value="16">16 chunk threads (maximum)</option>
+                </select>
+                <small>For tables with 10M+ rows, process chunks in parallel. 8 threads optimal for your 16 vCPU system</small>
+            </div>
+            
+            <div class="form-group" style="background-color: #f0f8ff; padding: 1em; border-radius: 4px; border: 1px solid #b3d9ff;">
+                <h4 style="margin-top: 0; color: #0056b3;">�️ Export Organization (NEW!)</h4>
+                
+                <div style="margin-bottom: 1em;">
+                    <label for="export_strategy">Directory Organization</label>
+                    <select id="export_strategy" name="export_strategy">
+                        <option value="clean_with_archive" selected>Clean Structure + Archive (Recommended)</option>
+                        <option value="direct">Direct Export (Simple)</option>
+                        <option value="schema_first">Schema-Based Organization</option>
+                    </select>
+                </div>
+                
+                <div style="margin-bottom: 1em;">
+                    <label for="conflict_resolution">Handle Conflicts</label>
+                    <select id="conflict_resolution" name="conflict_resolution">
+                        <option value="version" selected>Version (table_v2, table_v3)</option>
+                        <option value="timestamp">Timestamp (table_2025-08-05_14-30)</option>
+                        <option value="overwrite">Overwrite Previous</option>
+                    </select>
+                </div>
+                
+                <div style="font-size: 0.9em; color: #0056b3;">
+                    <strong>📁 Final Structure (Clean):</strong>
+                    <pre style="background-color: #e6f3ff; padding: 0.5em; font-size: 0.8em; margin: 0.5em 0; border-radius: 3px;">exports/
+├── public_employees/          ← Direct table access
+│   ├── part_0001.parquet
+│   └── _export_metadata.json
+├── analytics_sales_data/
+└── .archive/jobs/             ← Job history preserved
+    └── job_12345_timestamp.json</pre>
+                    <span style="color: #28a745;">✅ No job ID clutter in final structure!</span><br>
+                    <span style="color: #28a745;">✅ Easy table access: <code>exports/table_name/</code></span><br>
+                    <span style="color: #28a745;">✅ Complete job history preserved</span>
+                </div>
+            </div>
+            
             <button type="submit">Start Export Job</button>
         </form>
 
         <div id="response" style="display:none;"></div>
 
         <hr style="margin: 2em 0;">
-        <a href="/history">View All Job History</a>
+        <a href="/history">View All Job History</a> | 
+        <a href="/chunks">Chunk Processing Monitor</a> | 
+        <a href="/logs">Worker Logs</a>
     </div>
 
     <script>
@@ -203,18 +284,82 @@
         function populateTableList(tables) {
             const tableList = document.getElementById('table-list');
             tableList.innerHTML = '';
+            selectedTables = [];
+            
+            if (tables.length === 0) {
+                tableList.innerHTML = '<p>No tables found</p>';
+                return;
+            }
             
             tables.forEach(tableName => {
                 const tableItem = document.createElement('div');
                 tableItem.className = 'table-item';
                 tableItem.onclick = () => toggleTableSelection(tableName, tableItem);
                 
+                // Get chunk size for preview calculation
+                const chunkSize = parseInt(document.getElementById('chunk_size').value) || 1000000;
+                
                 tableItem.innerHTML = `
                     <div><strong>${tableName}</strong></div>
-                    <div class="table-item-info">Click to view details or toggle selection</div>
+                    <div class="table-item-info">
+                        <span class="table-preview-info" data-table="${tableName}">Click to preview partitioning info...</span>
+                    </div>
                 `;
                 
                 tableList.appendChild(tableItem);
+                
+                // Load table preview asynchronously
+                loadTablePreview(tableName, tableItem, chunkSize);
+            });
+        }
+        
+        function loadTablePreview(tableName, tableItem, chunkSize) {
+            // Get connection details for preview
+            const connectionData = {
+                db_type: document.getElementById('db_type').value,
+                db_host: document.getElementById('db_host').value,
+                db_port: document.getElementById('db_port').value,
+                db_username: document.getElementById('db_username').value,
+                db_password: document.getElementById('db_password').value,
+                db_name: document.getElementById('db_name').value,
+                table_name: tableName,
+                chunk_size: chunkSize
+            };
+            
+            // Only load if we have connection details
+            if (!connectionData.db_host || !connectionData.db_username || !connectionData.db_password) {
+                return;
+            }
+            
+            fetch('/api/table-info', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(connectionData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    const infoSpan = tableItem.querySelector('.table-preview-info');
+                    infoSpan.textContent = 'Error loading info';
+                    return;
+                }
+                
+                const partInfo = data.partitioning_info;
+                const infoSpan = tableItem.querySelector('.table-preview-info');
+                
+                let infoText = `${data.row_count.toLocaleString()} rows, ${data.column_count} columns`;
+                
+                if (partInfo.will_be_partitioned) {
+                    infoText += ` → ${partInfo.estimated_chunks} files (~${partInfo.estimated_size_mb} MB)`;
+                } else {
+                    infoText += ` → 1 file (~${partInfo.estimated_size_mb} MB)`;
+                }
+                
+                infoSpan.textContent = infoText;
+            })
+            .catch(error => {
+                const infoSpan = tableItem.querySelector('.table-preview-info');
+                infoSpan.textContent = 'Preview unavailable';
             });
         }
 
@@ -333,6 +478,48 @@
 
             // Get selected tables based on mode
             data.tables = getSelectedTables();
+            
+            // Convert chunk_size to integer
+            data.chunk_size = parseInt(data.chunk_size);
+            
+            // Convert max_threads to integer
+            data.max_threads = parseInt(data.max_threads);
+            
+            // Convert max_chunk_workers to integer
+            data.max_chunk_workers = parseInt(data.max_chunk_workers);
+            
+            // Add export organization configuration
+            data.export_organization = {
+                strategy: data.export_strategy || 'clean_with_archive',
+                conflict_resolution: data.conflict_resolution || 'version',
+                preserve_job_history: true,
+                auto_cleanup_temp: true
+            };
+            
+            // Remove the individual fields since they're now in the object
+            delete data.export_strategy;
+            delete data.conflict_resolution;
+            
+            // Validate chunk size
+            if (data.chunk_size < 10000 || data.chunk_size > 10000000) {
+                responseDiv.style.display = 'block';
+                responseDiv.innerHTML = `<span class="error">Error: Chunk size must be between 10,000 and 10,000,000 rows</span>`;
+                return;
+            }
+            
+            // Validate max_threads
+            if (data.max_threads < 1 || data.max_threads > 16) {
+                responseDiv.style.display = 'block';
+                responseDiv.innerHTML = `<span class="error">Error: Thread count must be between 1 and 16</span>`;
+                return;
+            }
+            
+            // Validate max_chunk_workers
+            if (data.max_chunk_workers < 1 || data.max_chunk_workers > 16) {
+                responseDiv.style.display = 'block';
+                responseDiv.innerHTML = `<span class="error">Error: Chunk worker count must be between 1 and 16</span>`;
+                return;
+            }
 
             fetch('/api/jobs', {
                 method: 'POST',
@@ -347,6 +534,8 @@
                 if (result.job_id) {
                     responseDiv.innerHTML = `<span class="success">Successfully started job. ID: ${result.job_id}</span>`;
                     responseDiv.innerHTML += `<br><a href="/job/${result.job_id}">View job details</a>`;
+                    responseDiv.innerHTML += `<br><small>Using chunk size: ${data.chunk_size.toLocaleString()} rows per file</small>`;
+                    responseDiv.innerHTML += `<br><small>Processing with ${data.max_threads} table thread(s) and ${data.max_chunk_workers} chunk worker(s)</small>`;
                 } else if (result.error) {
                     responseDiv.innerHTML = `<span class="error">Error: ${result.error}</span>`;
                 } else {

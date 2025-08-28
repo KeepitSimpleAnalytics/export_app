@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: adu-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: adu-web
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./adu/data:/app/adu/data
+      - ./exports:/app/exports
+      - ./logs:/app/logs
+    environment:
+      - FLASK_ENV=production
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    command: ["./start_production.sh"]
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: adu-worker
+    volumes:
+      - ./adu/data:/app/adu/data
+      - ./exports:/app/exports
+      - ./logs:/app/logs
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    command: ["./start_worker.sh"]
+
+  worker2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: adu-worker2
+    volumes:
+      - ./adu/data:/app/adu/data
+      - ./exports:/app/exports
+      - ./logs:/app/logs
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    command: ["./start_worker.sh"]
+
+volumes:
+  redis_data:

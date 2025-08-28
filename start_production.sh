@@ -1,139 +1,121 @@
 #!/bin/bash
-# Production startup script for Air-gapped Data Utility (ADU)
 
-set -e
+# Production startup script using Gunicorn
+# This script replaces the development Flask server with production-ready Gunicorn
 
-# Configuration
-APP_DIR="/opt/adu"
-VENV_DIR="$APP_DIR/venv"
-LOG_DIR="/var/log/adu"
-DATA_DIR="/opt/adu/data"
-EXPORTS_DIR="/opt/adu/exports"
-USER="adu"
+set -e  # Exit on any error
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+echo "=== ADU Export Application - Production Startup ==="
 
-echo_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
+# Set Python path to include current directory for imports
+export PYTHONPATH=/app:$PYTHONPATH
+
+# Define the path for the database
+DB_FILE="/tmp/adu.db"
+
+# Load environment variables if .env file exists
+if [ -f "/app/.env" ]; then
+    echo "Loading environment variables from .env file..."
+    set -a  # automatically export all variables
+    source /app/.env
+    set +a
+fi
+
+# Set default values for Gunicorn if not provided
+export PORT=${PORT:-5000}
+export GUNICORN_WORKERS=${GUNICORN_WORKERS:-4}
+export GUNICORN_ACCESS_LOG=${GUNICORN_ACCESS_LOG:-/tmp/gunicorn_access.log}
+export GUNICORN_ERROR_LOG=${GUNICORN_ERROR_LOG:-/tmp/gunicorn_error.log}
+export GUNICORN_LOG_LEVEL=${GUNICORN_LOG_LEVEL:-info}
+
+echo "Configuration:"
+echo "  - Port: $PORT"
+echo "  - Workers: $GUNICORN_WORKERS"
+echo "  - Access Log: $GUNICORN_ACCESS_LOG"
+echo "  - Error Log: $GUNICORN_ERROR_LOG"
+echo "  - Log Level: $GUNICORN_LOG_LEVEL"
+
+# Check if the database file already exists.
+# If it doesn't, run the initialization script.
+if [ ! -f "$DB_FILE" ]; then
+    echo "Database not found. Initializing..."
+    python3 init_database.py
+else
+    echo "Database already exists. Skipping initialization."
+fi
+
+# Create log directories if they don't exist
+mkdir -p "$(dirname "$GUNICORN_ACCESS_LOG")" "$(dirname "$GUNICORN_ERROR_LOG")"
+
+# Function to handle shutdown gracefully
+shutdown() {
+    echo "Shutting down ADU Export Application..."
+    if [ ! -z "$GUNICORN_PID" ]; then
+        echo "Stopping Gunicorn (PID: $GUNICORN_PID)..."
+        kill -TERM "$GUNICORN_PID" 2>/dev/null || true
+        wait "$GUNICORN_PID" 2>/dev/null || true
+    fi
+    if [ ! -z "$WORKER_PID" ]; then
+        echo "Stopping Worker (PID: $WORKER_PID)..."
+        kill -TERM "$WORKER_PID" 2>/dev/null || true
+        wait "$WORKER_PID" 2>/dev/null || true
+    fi
+    echo "Shutdown complete."
+    exit 0
 }
 
-echo_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
-}
+# Set up signal handlers
+trap shutdown SIGTERM SIGINT
 
-echo_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
+echo "Starting Gunicorn server..."
+# Start Gunicorn with the Flask app in the background
+gunicorn \
+    --config gunicorn.conf.py \
+    --bind "0.0.0.0:$PORT" \
+    --workers "$GUNICORN_WORKERS" \
+    --access-logfile "$GUNICORN_ACCESS_LOG" \
+    --error-logfile "$GUNICORN_ERROR_LOG" \
+    --log-level "$GUNICORN_LOG_LEVEL" \
+    --pid /tmp/gunicorn.pid \
+    "adu.app:app" &
 
-# Check if running as root for initial setup
-if [[ $EUID -eq 0 ]]; then
-    echo_info "Running initial setup as root..."
-    
-    # Create user if it doesn't exist
-    if ! id "$USER" &>/dev/null; then
-        echo_info "Creating user: $USER"
-        useradd -r -s /bin/bash -d $APP_DIR $USER
+GUNICORN_PID=$!
+echo "Gunicorn started with PID: $GUNICORN_PID"
+
+# Give Gunicorn a moment to start
+sleep 2
+
+# Check if Gunicorn is running
+if ! kill -0 "$GUNICORN_PID" 2>/dev/null; then
+    echo "ERROR: Gunicorn failed to start!"
+    exit 1
+fi
+
+echo "Starting worker process..."
+# Start the worker process in the background
+python3 adu/worker.py &
+WORKER_PID=$!
+echo "Worker started with PID: $WORKER_PID"
+
+echo "=== ADU Export Application Started Successfully ==="
+echo "  - Gunicorn PID: $GUNICORN_PID"
+echo "  - Worker PID: $WORKER_PID"
+echo "  - Web interface: http://0.0.0.0:$PORT"
+
+# Monitor both processes
+while true; do
+    # Check if Gunicorn is still running
+    if ! kill -0 "$GUNICORN_PID" 2>/dev/null; then
+        echo "ERROR: Gunicorn process died! Shutting down..."
+        shutdown
     fi
     
-    # Create directories
-    echo_info "Creating directories..."
-    mkdir -p $APP_DIR $LOG_DIR $DATA_DIR $EXPORTS_DIR
-    chown -R $USER:$USER $APP_DIR $LOG_DIR $DATA_DIR $EXPORTS_DIR
-    chmod 755 $APP_DIR $LOG_DIR $DATA_DIR $EXPORTS_DIR
+    # Check if Worker is still running
+    if ! kill -0 "$WORKER_PID" 2>/dev/null; then
+        echo "ERROR: Worker process died! Shutting down..."
+        shutdown
+    fi
     
-    # Switch to the adu user for the rest of the setup
-    echo_info "Switching to user: $USER"
-    exec sudo -u $USER $0 "$@"
-fi
-
-# Ensure we're in the app directory
-cd $APP_DIR
-
-# Check for virtual environment
-if [ ! -d "$VENV_DIR" ]; then
-    echo_info "Creating Python virtual environment..."
-    python3 -m venv $VENV_DIR
-fi
-
-# Activate virtual environment
-source $VENV_DIR/bin/activate
-
-# Install/upgrade dependencies
-echo_info "Installing dependencies..."
-pip install --upgrade pip
-pip install -r requirements.txt
-pip install gunicorn
-
-# Load environment variables
-if [ -f ".env" ]; then
-    echo_info "Loading environment variables from .env file..."
-    export $(cat .env | grep -v '^#' | xargs)
-else
-    echo_warn "No .env file found. Using default configuration."
-    echo_warn "Copy .env.example to .env and configure for production."
-fi
-
-# Initialize database if it doesn't exist
-if [ ! -f "${ADU_DB_PATH:-$DATA_DIR/adu.db}" ]; then
-    echo_info "Initializing database..."
-    python3 init_database.py
-fi
-
-# Function to start the web application
-start_web() {
-    echo_info "Starting web application..."
-    gunicorn --config gunicorn.conf.py --chdir adu app:app
-}
-
-# Function to start the worker
-start_worker() {
-    echo_info "Starting worker process..."
-    cd adu && python3 worker.py
-}
-
-# Function to start both services
-start_all() {
-    echo_info "Starting all services..."
-    
-    # Start worker in background
-    start_worker &
-    WORKER_PID=$!
-    echo_info "Worker started with PID: $WORKER_PID"
-    
-    # Start web app in foreground
-    start_web &
-    WEB_PID=$!
-    echo_info "Web app started with PID: $WEB_PID"
-    
-    # Wait for processes
-    wait $WEB_PID $WORKER_PID
-}
-
-# Parse command line arguments
-case "${1:-all}" in
-    web)
-        start_web
-        ;;
-    worker)
-        start_worker
-        ;;
-    all)
-        start_all
-        ;;
-    test)
-        echo_info "Running tests..."
-        python3 run_tests.py
-        ;;
-    *)
-        echo "Usage: $0 {web|worker|all|test}"
-        echo "  web    - Start only the web application"
-        echo "  worker - Start only the worker process"
-        echo "  all    - Start both web and worker (default)"
-        echo "  test   - Run the test suite"
-        exit 1
-        ;;
-esac
+    # Wait a bit before checking again
+    sleep 10
+done
