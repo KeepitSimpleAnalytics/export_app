@@ -16,13 +16,15 @@ from adu.duckdb_exporter import create_duckdb_connection, check_memory_safety
 
 @dataclass
 class DuckDBStreamingConfig:
-    """Configuration for DuckDB streaming operations"""
-    chunk_size_rows: int = 5000000  # 5M rows per chunk for very large tables
-    max_chunks: int = 1000  # Maximum chunks to prevent runaway operations
-    compression: str = 'snappy'
-    use_chunking_threshold: int = 50000000  # Use chunking for tables > 50M rows (FIXED: was 500M, causing performance bug)
-    offset_performance_threshold: int = 100000000  # OFFSET becomes very slow above 100M rows
-    memory_check_interval: int = 10  # Check memory every N chunks
+    """Configuration for DuckDB streaming operations - OPTIMIZED FOR GREENPLUM LARGE TABLES"""
+    # PERFORMANCE OPTIMIZATION: Larger chunks for better throughput on 100M+ row tables
+    chunk_size_rows: int = 10000000  # OPTIMIZED: 10M rows per chunk (was 5M) for better Greenplum performance
+    max_chunks: int = 500            # INCREASED: Allow more chunks for very large tables
+    compression: str = 'snappy'      # Fast compression for speed
+    use_chunking_threshold: int = 20000000   # REDUCED: Use chunking for tables > 20M rows (was 50M)
+    offset_performance_threshold: int = 50000000  # OPTIMIZED: OFFSET becomes slow above 50M rows (was 100M)
+    memory_check_interval: int = 5   # OPTIMIZED: Check memory more frequently for large tables
+    single_file_threshold: int = 100000000  # OPTIMIZED: Use single file for tables < 100M rows to avoid OFFSET issues
 
 
 class DuckDBStreamer:
@@ -306,18 +308,20 @@ def export_large_table_with_duckdb_streaming(
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Decision: single file vs chunked based on estimated size
-    # IMPORTANT: OFFSET-based chunking becomes exponentially slower with large tables
-    # For tables > 100M rows, single file streaming is much faster than OFFSET chunking
+    # CRITICAL OPTIMIZATION FOR GREENPLUM: Avoid OFFSET-based chunking for large tables
+    # For tables > 50M rows, single file streaming is much faster than OFFSET chunking
     
-    # Check for OFFSET performance issues
+    # Check for OFFSET performance issues - UPDATED THRESHOLD for better performance
     offset_will_be_slow = estimated_rows > streamer.config.offset_performance_threshold
     if offset_will_be_slow:
-        logger.warning(f"🚨 PERFORMANCE ALERT: Table has {estimated_rows:,} rows - OFFSET chunking would cause severe performance degradation (8+ hours)")
-        logger.info(f"✅ SOLUTION: Using single-file streaming instead to avoid OFFSET performance penalty (30-60 minutes expected)")
+        logger.warning(f"🚨 PERFORMANCE ALERT: Table has {estimated_rows:,} rows - OFFSET chunking would cause severe performance degradation")
+        logger.info(f"✅ SOLUTION: Using single-file streaming to avoid OFFSET performance penalty")
     
-    # Enhanced chunking decision logic - prioritize performance over file size
+    # OPTIMIZED chunking decision logic - prioritize performance over file size
+    # IMPORTANT: For Greenplum, larger single files are often faster than many chunks with OFFSET
     use_chunking = (
-        estimated_rows > streamer.config.use_chunking_threshold and
+        estimated_rows > streamer.config.use_chunking_threshold and  # Tables > 20M rows
+        estimated_rows < streamer.config.single_file_threshold and   # But < 100M rows (NEW OPTIMIZATION)
         not offset_will_be_slow and  # Avoid OFFSET performance issues (PRIMARY CONSTRAINT)
         estimated_rows != 0  # Known size
     )
@@ -327,9 +331,9 @@ def export_large_table_with_duckdb_streaming(
         logger.info("Unknown table size - using single file streaming to avoid potential OFFSET issues")
         use_chunking = False
     
-    # SAFETY CHECK: Prevent accidental chunked streaming for 100M+ rows
-    if use_chunking and estimated_rows >= 100000000:
-        logger.error(f"❌ SAFETY OVERRIDE: Preventing chunked streaming for {estimated_rows:,} rows (would cause 8+ hour exports)")
+    # ENHANCED SAFETY CHECK: Prevent OFFSET-based chunking for large tables
+    if use_chunking and estimated_rows >= 50000000:  # REDUCED threshold from 100M to 50M
+        logger.error(f"❌ SAFETY OVERRIDE: Preventing chunked streaming for {estimated_rows:,} rows (would cause long exports)")
         logger.info("🔄 OVERRIDE: Forcing single-file streaming for optimal performance")
         use_chunking = False
     

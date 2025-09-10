@@ -246,7 +246,8 @@ class RangeChunker:
         return ranges
     
     def _calculate_numeric_ranges(self, target_chunk_size: int) -> List[Tuple[int, int]]:
-        """Calculate numeric ranges for chunking based on actual row count estimation"""
+        """Calculate numeric ranges for chunking based on actual row count estimation
+        OPTIMIZED FOR GREENPLUM PERFORMANCE with large tables (100M+ rows)"""
         ranges = []
         
         min_val = self.range_info.min_value
@@ -256,8 +257,8 @@ class RangeChunker:
         try:
             with get_database_connection() as db_conn:
                 cursor = db_conn.cursor()
-                # Add timeout protection for row count query
-                cursor.execute("SET statement_timeout = 30000")  # 30 second timeout
+                # PERFORMANCE OPTIMIZATION: Use shorter timeout for large tables
+                cursor.execute("SET statement_timeout = 60000")  # 60 second timeout (was 30)
                 cursor.execute(f"SELECT COUNT(*) FROM {self.table_name}")
                 actual_row_count = cursor.fetchone()[0]
                 
@@ -267,19 +268,27 @@ class RangeChunker:
                 # Calculate optimal number of chunks based on actual data
                 optimal_chunk_count = max(1, (actual_row_count + target_chunk_size - 1) // target_chunk_size)
                 
-                # Calculate smart chunk limits based on table size
-                if actual_row_count > 1000000000:  # 1B+ rows - Massive tables
+                # GREENPLUM OPTIMIZATION: Enhanced chunk limits for better segment utilization
+                if actual_row_count > 1000000000:  # 1B+ rows - Ultra-massive tables
                     min_chunks = 1
-                    max_chunks = min(300, actual_row_count // 1000000)  # At least 1M rows per chunk
+                    max_chunks = min(200, actual_row_count // 5000000)   # OPTIMIZED: At least 5M rows per chunk
+                    min_rows_per_chunk = 5000000    # OPTIMIZED: Larger chunks for ultra-massive tables
+                elif actual_row_count > 500000000:  # 500M+ rows - Massive tables  
+                    min_chunks = 1
+                    max_chunks = min(150, actual_row_count // 3000000)   # At least 3M rows per chunk
+                    min_rows_per_chunk = 3000000
+                elif actual_row_count > 100000000:  # 100M+ rows - Large tables (PRIMARY TARGET)
+                    min_chunks = 1
+                    max_chunks = min(100, actual_row_count // 2000000)   # OPTIMIZED: At least 2M rows per chunk  
+                    min_rows_per_chunk = 2000000    # OPTIMIZED: Larger minimum for 100M+ tables
+                elif actual_row_count > 10000000:   # 10M+ rows - Medium-large tables
+                    min_chunks = 1
+                    max_chunks = min(80, actual_row_count // 1000000)    # At least 1M rows per chunk
                     min_rows_per_chunk = 1000000
-                elif actual_row_count > 100000000:  # 100M+ rows - Large tables  
+                else:  # <10M rows - Smaller tables
                     min_chunks = 1
-                    max_chunks = min(100, actual_row_count // 500000)   # At least 500K rows per chunk
+                    max_chunks = min(50, actual_row_count // 500000)     # At least 500K rows per chunk
                     min_rows_per_chunk = 500000
-                else:  # <100M rows - Small to medium tables
-                    min_chunks = 1
-                    max_chunks = min(50, actual_row_count // 50000)     # At least 50K rows per chunk
-                    min_rows_per_chunk = 50000
                 
                 optimal_chunk_count = max(min_chunks, min(optimal_chunk_count, max_chunks))
                 
@@ -287,11 +296,11 @@ class RangeChunker:
                 if actual_row_count // optimal_chunk_count < min_rows_per_chunk:
                     optimal_chunk_count = max(1, actual_row_count // min_rows_per_chunk)
                 
-                logger.info(f"Table {self.table_name}: {actual_row_count:,} rows -> {optimal_chunk_count} chunks "
-                           f"(target: {target_chunk_size:,} rows/chunk)")
+                logger.info(f"OPTIMIZED CHUNKING for {self.table_name}: {actual_row_count:,} rows -> {optimal_chunk_count} chunks "
+                           f"(target: {target_chunk_size:,} rows/chunk, min: {min_rows_per_chunk:,})")
                 
-                # Always use simple range division to avoid expensive percentile calculations
-                # that can hang on large tables (36M+ rows)
+                # PERFORMANCE OPTIMIZATION: Always use simple range division to avoid expensive operations
+                # This prevents hanging on large tables (even with 100M+ rows)
                 total_range = max_val - min_val
                 chunk_range_size = max(1, total_range // optimal_chunk_count)
                 
@@ -309,11 +318,14 @@ class RangeChunker:
                     if current_start > max_val:
                         break
                 
+                logger.info(f"Generated {len(ranges)} ranges for {self.table_name} "
+                           f"(avg range size: {chunk_range_size:,}, total range: {total_range:,})")
+                
         except Exception as e:
-            logger.warning(f"Error calculating optimized ranges: {e}, falling back to simple approach")
-            # Fallback to simple approach
-            estimated_chunks = max(1, min(10, (max_val - min_val) // target_chunk_size))
-            chunk_range_size = (max_val - min_val) // estimated_chunks
+            logger.warning(f"Error calculating optimized ranges for {self.table_name}: {e}, using fallback")
+            # Fallback to simple approach with performance-oriented defaults
+            estimated_chunks = max(1, min(50, (max_val - min_val) // max(1000000, target_chunk_size)))
+            chunk_range_size = (max_val - min_val) // estimated_chunks if estimated_chunks > 0 else (max_val - min_val)
             
             current_start = min_val
             for i in range(estimated_chunks):
@@ -432,6 +444,7 @@ class RangeChunker:
                           max_workers: int = 6, use_duckdb: bool = True) -> Tuple[bool, int]:
         """
         Export table using range-based chunking with parallel processing
+        OPTIMIZED FOR GREENPLUM LARGE TABLE PERFORMANCE
         
         Args:
             output_dir: Output directory for chunks
@@ -442,7 +455,8 @@ class RangeChunker:
         Returns:
             Tuple of (success: bool, total_rows_exported: int)
         """
-        logger.info(f"Starting range-based export of {self.table_name} with {len(ranges)} ranges")
+        logger.info(f"🚀 STARTING OPTIMIZED RANGE-BASED EXPORT: {self.table_name}")
+        logger.info(f"📊 Configuration: {len(ranges)} ranges, {max_workers} workers, DuckDB: {use_duckdb}")
         
         output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -451,11 +465,17 @@ class RangeChunker:
         failed_chunks = 0
         
         # Set table context for logging
-        logger.set_table_context(self.table_name, 0, len(ranges), "Range-Based")
+        logger.set_table_context(self.table_name, 0, len(ranges), "Range-Based-Optimized")
         
         start_time = time.time()
         
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"RangeChunk-{self.table_name}") as executor:
+        # GREENPLUM OPTIMIZATION: Use more aggressive parallelism for large tables
+        effective_workers = max_workers
+        if len(ranges) > 50:  # Large number of ranges
+            effective_workers = min(max_workers + 2, 16)  # Boost workers for large exports
+            logger.info(f"🔥 PERFORMANCE BOOST: Using {effective_workers} workers for {len(ranges)} ranges")
+        
+        with ThreadPoolExecutor(max_workers=effective_workers, thread_name_prefix=f"RangeChunk-{self.table_name}") as executor:
             # Submit all range export tasks
             future_to_range = {}
             
@@ -466,7 +486,10 @@ class RangeChunker:
                 )
                 future_to_range[future] = (i, start_val, end_val)
             
-            # Process completed chunks
+            # Process completed chunks with enhanced progress reporting
+            chunks_completed_since_last_log = 0
+            last_progress_log = time.time()
+            
             for future in as_completed(future_to_range):
                 chunk_num, start_val, end_val = future_to_range[future]
                 
@@ -476,11 +499,27 @@ class RangeChunker:
                     if success:
                         successful_chunks += 1
                         total_rows_exported += rows_exported
+                        chunks_completed_since_last_log += 1
                         
-                        # Update progress
+                        # Enhanced progress logging for large exports
                         elapsed = time.time() - start_time
                         throughput = int(total_rows_exported / elapsed) if elapsed > 0 else 0
+                        progress_percent = (successful_chunks / len(ranges)) * 100
                         
+                        # Log progress every 10 chunks or every 30 seconds for large exports
+                        time_since_log = time.time() - last_progress_log
+                        should_log = (chunks_completed_since_last_log >= 10 or 
+                                    time_since_log >= 30 or 
+                                    successful_chunks % max(len(ranges) // 10, 1) == 0)
+                        
+                        if should_log:
+                            logger.info(f"⚡ PROGRESS: {successful_chunks}/{len(ranges)} chunks ({progress_percent:.1f}%) | "
+                                       f"{total_rows_exported:,} rows | {throughput:,} rows/sec | "
+                                       f"Range {chunk_num + 1}: {rows_exported:,} rows ({start_val} to {end_val})")
+                            chunks_completed_since_last_log = 0
+                            last_progress_log = time.time()
+                        
+                        # Update table progress for WebSocket updates
                         logger.table_progress(
                             self.table_name,
                             total_rows_exported,
@@ -488,17 +527,15 @@ class RangeChunker:
                             throughput
                         )
                         
-                        logger.info(f"Range chunk {chunk_num + 1}/{len(ranges)} completed: "
-                                   f"{rows_exported:,} rows ({start_val} to {end_val})")
                     else:
                         failed_chunks += 1
-                        logger.error(f"Range chunk {chunk_num + 1} failed: {start_val} to {end_val}")
+                        logger.error(f"❌ Range chunk {chunk_num + 1} failed: {start_val} to {end_val}")
                         
                 except Exception as e:
                     failed_chunks += 1
-                    logger.error(f"Range chunk {chunk_num + 1} exception: {str(e)}")
+                    logger.error(f"💥 Range chunk {chunk_num + 1} exception: {str(e)}")
         
-        # Final logging
+        # Final logging with performance summary
         elapsed = time.time() - start_time
         throughput = int(total_rows_exported / elapsed) if elapsed > 0 else 0
         
@@ -508,9 +545,23 @@ class RangeChunker:
                 if f.exists()
             ) / 1024 / 1024
             
+            logger.info(f"🎉 RANGE-BASED EXPORT COMPLETED SUCCESSFULLY!")
+            logger.info(f"📈 PERFORMANCE SUMMARY:")
+            logger.info(f"   • Total rows: {total_rows_exported:,}")
+            logger.info(f"   • Total chunks: {successful_chunks}")
+            logger.info(f"   • Duration: {elapsed:.1f}s ({elapsed/60:.1f}m)")
+            logger.info(f"   • Throughput: {throughput:,} rows/sec")
+            logger.info(f"   • File size: {total_size_mb:.1f} MB")
+            logger.info(f"   • Avg chunk size: {total_rows_exported//successful_chunks:,} rows" if successful_chunks > 0 else "")
+            
             logger.table_completed(self.table_name, total_rows_exported, elapsed, total_size_mb)
             return True, total_rows_exported
         else:
+            logger.error(f"❌ RANGE-BASED EXPORT FAILED:")
+            logger.error(f"   • Successful chunks: {successful_chunks}/{len(ranges)}")
+            logger.error(f"   • Failed chunks: {failed_chunks}")
+            logger.error(f"   • Rows exported: {total_rows_exported:,}")
+            
             logger.table_failed(
                 self.table_name, 
                 f"Range-based export failed: {failed_chunks}/{len(ranges)} chunks failed"

@@ -15,6 +15,14 @@ from enum import Enum
 from adu.enhanced_logger import logger
 from adu.greenplum_pool import get_database_connection
 from adu.sqlite_writer import get_sqlite_writer
+from adu.greenplum_performance_config import (
+    get_optimal_chunk_size, 
+    get_optimal_worker_count,
+    should_use_range_chunking,
+    should_avoid_offset_methods,
+    get_performance_warning,
+    GREENPLUM_LARGE_TABLE_CONFIG
+)
 from adu.duckdb_streaming import (
     export_large_table_with_duckdb_streaming,
     can_use_duckdb_streaming,
@@ -221,6 +229,7 @@ class SmartExportSelector:
     def select_export_method(self, characteristics: TableCharacteristics) -> ExportMethod:
         """
         Select the optimal export method based on table characteristics
+        OPTIMIZED FOR GREENPLUM LARGE TABLE EXPORTS (100M+ rows)
         
         Args:
             characteristics: Table characteristics from analysis
@@ -230,42 +239,49 @@ class SmartExportSelector:
         """
         row_count = characteristics.row_count
         
-        # Decision tree for export method selection
+        # Check for performance warnings using the configuration
+        perf_warning = get_performance_warning(row_count, "current_analysis")
+        if perf_warning:
+            logger.warning(perf_warning)
+        
+        # Use performance configuration to make optimal decisions
+        should_use_range = should_use_range_chunking(row_count, characteristics.has_suitable_range_column)
+        should_avoid_offset = should_avoid_offset_methods(row_count)
+        
+        # CRITICAL OPTIMIZATION: Prioritize range chunking for large tables to avoid 8+ hour OFFSET issues
         
         # 1. Small tables: Direct DuckDB export
-        if row_count < 500000:  # Less than 500K rows
-            logger.info("Selected DIRECT_DUCKDB: Small table (< 500K rows)")
+        if row_count < GREENPLUM_LARGE_TABLE_CONFIG['method_selection']['small_table_threshold']:
+            logger.info("Selected DIRECT_DUCKDB: Small table")
             return ExportMethod.DIRECT_DUCKDB
         
-        # 2. Medium tables with suitable range columns: Range chunking
-        elif (row_count < 50000000 and  # Less than 50M rows
-              characteristics.has_suitable_range_column):
-            logger.info(f"Selected RANGE_CHUNKING: Medium table with range column ({characteristics.range_column_info})")
+        # 2. PRIORITY: Use configuration-driven range chunking decision
+        elif should_use_range:
+            logger.info(f"🚀 PERFORMANCE OPTIMIZED: Selected RANGE_CHUNKING for {row_count:,} rows")
+            logger.info(f"⚡ AVOIDING OFFSET: Using range column ({characteristics.range_column_info}) for optimal performance")
             return ExportMethod.RANGE_CHUNKING
         
-        # 3. Large tables where OFFSET would be very slow: DuckDB streaming
-        elif (row_count > 50000000 and  # More than 50M rows
-              characteristics.supports_cursors and
-              characteristics.estimated_offset_penalty in ['high', 'extreme']):
-            logger.info("Selected CURSOR_STREAMING: Large table - using efficient DuckDB streaming")
+        # 3. CRITICAL: Large tables that should avoid OFFSET but have no range columns
+        elif should_avoid_offset:
+            if characteristics.supports_cursors:
+                logger.warning(f"⚠️  NO RANGE COLUMN: Using CURSOR_STREAMING for {row_count:,} rows")
+                logger.warning(f"💡 RECOMMENDATION: Add an auto-increment ID column for optimal performance")
+                return ExportMethod.CURSOR_STREAMING
+            else:
+                logger.error(f"❌ SUBOPTIMAL: No range column and no cursor support for {row_count:,} rows")
+                logger.error(f"🐌 WARNING: Export may take several hours")
+                return ExportMethod.PARALLEL_DUCKDB
+        
+        # 4. Medium tables with cursor support: DuckDB streaming 
+        elif (row_count >= 5000000 and characteristics.supports_cursors):
+            logger.info("Selected CURSOR_STREAMING: Medium-large table with cursor support")
             return ExportMethod.CURSOR_STREAMING
         
-        # 4. Tables with good range columns even if large: Range chunking
-        elif (characteristics.has_suitable_range_column and
-              characteristics.range_column_info and
-              'serial' in characteristics.range_column_info.lower()):  # Sequential columns
-            logger.info(f"Selected RANGE_CHUNKING: Sequential range column ({characteristics.range_column_info})")
-            return ExportMethod.RANGE_CHUNKING
-        
-        # 5. Very large tables that support cursors: DuckDB streaming
-        elif (row_count > 100000000 and  # More than 100M rows
-              characteristics.supports_cursors):
-            logger.info("Selected CURSOR_STREAMING: Very large table - using DuckDB streaming (> 100M rows)")
-            return ExportMethod.CURSOR_STREAMING
-        
-        # 6. Fallback: Parallel DuckDB (current implementation)
+        # 5. Fallback for medium tables
         else:
-            logger.info("Selected PARALLEL_DUCKDB: Fallback method (current implementation)")
+            logger.info("Selected PARALLEL_DUCKDB: Medium table fallback")
+            if row_count > 10000000:
+                logger.warning(f"Performance may be suboptimal for {row_count:,} rows without range columns")
             return ExportMethod.PARALLEL_DUCKDB
     
     def get_method_parameters(self, method: ExportMethod, characteristics: TableCharacteristics) -> Dict[str, Any]:
@@ -286,53 +302,44 @@ class SmartExportSelector:
             pass
         
         elif method == ExportMethod.RANGE_CHUNKING:
-            # Calculate optimal chunk size based on table size and performance targets
+            # OPTIMIZED CHUNKING STRATEGY FOR GREENPLUM LARGE TABLES using performance config
             row_count = characteristics.row_count
             
-            # Define tiered chunking strategy based on table size
-            if row_count > 1000000000:  # 1B+ rows - Massive tables
-                target_file_size_mb = 500  # Larger files for massive tables
-                min_chunk_size = 1000000   # Minimum 1M rows per chunk
-                max_chunk_size = 10000000  # Maximum 10M rows per chunk  
-                max_chunks = 300           # Allow up to 300 chunks for massive tables
+            # Use performance configuration for optimal parameters
+            optimal_chunk_size = get_optimal_chunk_size(row_count, self.cpu_count)
+            optimal_workers = get_optimal_worker_count(row_count, min(16, self.cpu_count))
+            
+            # Get configuration for detailed parameters
+            config = GREENPLUM_LARGE_TABLE_CONFIG['range_chunking']
+            output_config = GREENPLUM_LARGE_TABLE_CONFIG['output']
+            
+            # Calculate chunks and category based on optimized chunk size
+            calculated_chunks = (row_count + optimal_chunk_size - 1) // optimal_chunk_size
+            
+            # Determine table category for logging
+            if row_count > 1000000000:
+                table_category = "ultra-massive"
+            elif row_count > 500000000:
                 table_category = "massive"
-                
-            elif row_count > 100000000:  # 100M+ rows - Large tables
-                target_file_size_mb = 300  # Medium-large files
-                min_chunk_size = 500000    # Minimum 500K rows per chunk
-                max_chunk_size = 5000000   # Maximum 5M rows per chunk
-                max_chunks = 100           # Allow up to 100 chunks for large tables
+            elif row_count > 100000000:
                 table_category = "large"
-                
-            else:  # <100M rows - Small to medium tables
-                target_file_size_mb = 200  # Standard file size
-                min_chunk_size = 50000     # Minimum 50K rows per chunk
-                max_chunk_size = 2000000   # Maximum 2M rows per chunk
-                max_chunks = 50            # Limit to 50 chunks for smaller tables
-                table_category = "small"
-            
-            # Calculate target rows per file based on estimated row size
-            avg_row_size_bytes = max(100, characteristics.estimated_size_mb * 1024 * 1024 / row_count) if row_count > 0 else 500
-            target_rows_per_file = int(target_file_size_mb * 1024 * 1024 / avg_row_size_bytes)
-            
-            # Apply bounds and calculate optimal chunk size
-            target_chunk_size = max(min_chunk_size, min(target_rows_per_file, max_chunk_size))
-            
-            # Ensure we don't exceed maximum chunks for this table category
-            calculated_chunks = (row_count + target_chunk_size - 1) // target_chunk_size
-            if calculated_chunks > max_chunks:
-                target_chunk_size = max(min_chunk_size, (row_count + max_chunks - 1) // max_chunks)
-                calculated_chunks = max_chunks
+            elif row_count > 10000000:
+                table_category = "medium-large"
+            else:
+                table_category = "medium"
             
             params = {
-                'target_chunk_size': target_chunk_size,
-                'max_workers': min(6, max(2, self.cpu_count // 2)),  # Respect connection pool
-                'target_file_size_mb': target_file_size_mb,
+                'target_chunk_size': optimal_chunk_size,
+                'max_workers': optimal_workers,  # OPTIMIZED: Configuration-driven worker count
+                'target_file_size_mb': output_config['target_file_size_mb'],
                 'estimated_chunks': calculated_chunks,
                 'table_category': table_category,
-                'max_chunks': max_chunks,
-                'min_chunk_size': min_chunk_size,
-                'max_chunk_size': max_chunk_size
+                'max_chunks': min(calculated_chunks, output_config['max_files_per_table']),
+                'min_chunk_size': config['min_chunk_size'],
+                'max_chunk_size': config['max_chunk_size'],
+                'greenplum_optimized': characteristics.db_type.lower() == 'greenplum',
+                'segment_aligned': config['segment_alignment'],  # New: Greenplum segment alignment
+                'performance_optimized': True  # Flag indicating this uses the performance config
             }
         
         elif method == ExportMethod.CURSOR_STREAMING:
