@@ -2,26 +2,70 @@ from flask import Flask, jsonify, render_template, request, session
 import uuid
 import time
 import json
-import logging
-from adu.database import get_db_connection
-
 import os
+from adu.database import get_db_connection  # Keep for backwards compatibility
+from adu.enhanced_logger import logger
+from adu.sqlite_writer import get_sqlite_writer
+from adu.greenplum_pool import get_pool_stats, pool_health_check, get_database_connection as get_pooled_connection, initialize_connection_pool
+from adu.websocket_manager import websocket_manager
+from adu.tasks import execute_export_job
 
 app = Flask(__name__)
+
+# Initialize WebSocket support
+websocket_manager.init_app(app)
 
 # Configuration from environment variables  
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'simple-airgapped-secret')
 app.config['DEBUG'] = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
 
-# Disable HTTP request logging unless DEBUG is enabled
-if not app.config['DEBUG']:
-    # Disable Werkzeug HTTP request logging
-    logging.getLogger('werkzeug').setLevel(logging.WARNING)
-    
-    # Only show errors and warnings for application logs
-    logging.basicConfig(level=logging.WARNING)
-
 # No encryption needed for airgapped environment
+
+@app.route('/api/health')
+def health_check():
+    """Health check endpoint with connection pool and SQLite queue status"""
+    try:
+        health_info = {
+            'status': 'healthy',
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'components': {}
+        }
+        
+        # Check connection pool health
+        try:
+            pool_health = pool_health_check()
+            pool_stats = get_pool_stats()
+            health_info['components']['connection_pool'] = {
+                'status': pool_health.get('status', 'unknown'),
+                'active_connections': pool_stats.get('current_active', 0),
+                'max_connections': pool_stats.get('max_connections', 6),
+                'circuit_breaker': pool_stats.get('circuit_breaker_state', 'unknown')
+            }
+        except:
+            health_info['components']['connection_pool'] = {'status': 'not_initialized'}
+        
+        # Check SQLite writer queue
+        try:
+            sqlite_writer = get_sqlite_writer()
+            queue_stats = sqlite_writer.get_stats()
+            health_info['components']['sqlite_queue'] = {
+                'status': 'healthy' if queue_stats.get('worker_active', False) else 'unhealthy',
+                'queue_size': queue_stats.get('queue_size', 0),
+                'operations_processed': queue_stats.get('operations_processed', 0)
+            }
+        except Exception as e:
+            health_info['components']['sqlite_queue'] = {'status': 'error', 'error': str(e)}
+        
+        # Overall health based on components
+        if any(comp.get('status') in ['unhealthy', 'error'] 
+               for comp in health_info['components'].values()):
+            health_info['status'] = 'degraded'
+        
+        return jsonify(health_info)
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return jsonify({'status': 'error', 'error': str(e)}), 500
 
 @app.route('/')
 def index():
@@ -37,32 +81,56 @@ def job_details(job_id):
 
 @app.route('/api/history')
 def get_history():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM jobs ORDER BY start_time DESC')
-    jobs = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return jsonify(jobs)
+    """Get job history using SQLite writer queue"""
+    try:
+        sqlite_writer = get_sqlite_writer()
+        query = """
+            SELECT job_id, db_username, status, overall_status, celery_task_id,
+                   start_time, end_time, error_message, progress_percent,
+                   tables_total, tables_completed, tables_failed,
+                   created_at
+            FROM jobs ORDER BY start_time DESC
+        """
+        jobs = sqlite_writer.query(query, (), fetchone=False, timeout=10.0)
+        
+        # Convert to list of dicts for JSON serialization
+        jobs_list = [dict(row) for row in jobs] if jobs else []
+        return jsonify(jobs_list)
+        
+    except Exception as e:
+        logger.error(f"Failed to get job history: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/job/<job_id>')
 def get_job(job_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM jobs WHERE job_id = ?', (job_id,))
-    job_row = cursor.fetchone()
-    conn.close()
-    if job_row:
-        return jsonify(dict(job_row))
-    return jsonify({'error': 'Job not found'}), 404
+    """Get specific job details using SQLite writer queue"""
+    try:
+        sqlite_writer = get_sqlite_writer()
+        query = "SELECT * FROM jobs WHERE job_id = ?"
+        job_row = sqlite_writer.query(query, (job_id,), fetchone=True, timeout=5.0)
+        
+        if job_row:
+            return jsonify(dict(job_row))
+        return jsonify({'error': 'Job not found'}), 404
+            
+    except Exception as e:
+        logger.error(f"Failed to get job {job_id}: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/job/<job_id>/errors')
 def get_job_errors(job_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM errors WHERE job_id = ? ORDER BY timestamp DESC', (job_id,))
-    errors = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return jsonify(errors)
+    """Get job errors using SQLite writer queue"""
+    try:
+        sqlite_writer = get_sqlite_writer()
+        query = "SELECT * FROM errors WHERE job_id = ? ORDER BY timestamp DESC"
+        errors = sqlite_writer.query(query, (job_id,), fetchone=False, timeout=5.0)
+        
+        errors_list = [dict(row) for row in errors] if errors else []
+        return jsonify(errors_list)
+        
+    except Exception as e:
+        logger.error(f"Failed to get errors for job {job_id}: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/job/<job_id>/config')
 def get_job_config(job_id):
@@ -87,6 +155,76 @@ def get_job_tables(job_id):
     tables = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return jsonify(tables)
+
+@app.route('/api/job/<job_id>/chunks')
+def get_job_chunks(job_id):
+    """Get chunk processing information for a specific job"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Get table export details for chunking information
+    cursor.execute('SELECT * FROM table_exports WHERE job_id = ? ORDER BY table_name', (job_id,))
+    tables = []
+    
+    total_chunks = 0
+    completed_chunks = 0
+    processing_chunks = 0
+    
+    for row in cursor.fetchall():
+        table = dict(row)
+        
+        # Estimate chunk information based on file paths and status
+        chunk_count = 1  # Default to single file
+        chunks_completed = 0
+        chunks_remaining = 1
+        
+        # Check if this table has chunk files (partitioned export)
+        if table.get('file_path'):
+            try:
+                # Count actual parquet files for this table
+                from pathlib import Path
+                import os
+                
+                # Extract table directory from file path
+                file_path = Path(table['file_path'])
+                if file_path.exists():
+                    table_dir = file_path.parent
+                    # Count part_*.parquet files
+                    chunk_files = list(table_dir.glob('part_*.parquet'))
+                    if len(chunk_files) > 1:
+                        chunk_count = len(chunk_files)
+                        chunks_completed = len(chunk_files) if table['status'] == 'completed' else 0
+                        chunks_remaining = chunk_count - chunks_completed
+            except Exception:
+                pass  # Use defaults if file system check fails
+        
+        # Update based on table status
+        if table['status'] == 'completed':
+            chunks_completed = chunk_count
+            chunks_remaining = 0
+        elif table['status'] == 'processing':
+            processing_chunks += chunks_remaining
+        
+        table['chunk_count'] = chunk_count
+        table['chunks_completed'] = chunks_completed
+        table['chunks_remaining'] = chunks_remaining
+        
+        total_chunks += chunk_count
+        completed_chunks += chunks_completed
+        
+        tables.append(table)
+    
+    summary = {
+        'total_chunks': total_chunks,
+        'completed_chunks': completed_chunks, 
+        'processing_chunks': processing_chunks
+    }
+    
+    conn.close()
+    return jsonify({
+        'tables': tables,
+        'summary': summary
+    })
 
 @app.route('/api/job/<job_id>/export-details')
 def get_job_export_details(job_id):
@@ -143,8 +281,35 @@ def get_job_export_details(job_id):
                             table_info['total_size_bytes'] = total_size
                             table_info['total_size_mb'] = round(total_size / (1024 * 1024), 2)
                         else:
+                            # Metadata file not found, try to infer from directory contents
                             table_info['partitioned'] = False
-                            table_info['error'] = 'Metadata file not found'
+                            
+                            # Look for parquet files in the directory
+                            parquet_files = list(table_path.glob("*.parquet"))
+                            if parquet_files:
+                                # Check if it's partitioned (multiple part_*.parquet files)
+                                part_files = [f for f in parquet_files if f.name.startswith('part_')]
+                                
+                                if len(part_files) > 1:
+                                    # Partitioned export
+                                    table_info['partitioned'] = True
+                                    table_info['chunk_count'] = len(part_files)
+                                    table_info['files'] = [f.name for f in part_files]
+                                else:
+                                    # Single file export
+                                    table_info['partitioned'] = False
+                                    table_info['chunk_count'] = 1
+                                    table_info['files'] = [parquet_files[0].name]
+                                
+                                # Calculate total size
+                                total_size = sum(f.stat().st_size for f in parquet_files)
+                                table_info['total_size_bytes'] = total_size
+                                table_info['total_size_mb'] = round(total_size / (1024 * 1024), 2)
+                                
+                                # Add a note about inferred data
+                                table_info['metadata_source'] = 'inferred_from_files'
+                            else:
+                                table_info['error'] = 'No parquet files found in export directory'
                     else:
                         # Old single file format or file doesn't exist
                         if table_path.exists():
@@ -181,16 +346,53 @@ def get_worker_logs():
     
     try:
         log_file_path = '/tmp/worker.log'
+        
+        # If log file doesn't exist, create it or return empty logs with helpful message
         if not os.path.exists(log_file_path):
-            return jsonify({'error': 'Log file not found'}), 404
+            # Try to create the log file directory if needed
+            os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+            
+            # Return empty logs with informative message instead of error
+            return jsonify({
+                'lines': ['[INFO] Worker log file not found - no worker processes have started yet.'],
+                'total_lines': 1,
+                'filtered': False,
+                'showing': 1,
+                'status': 'log_file_not_found'
+            })
+        
+        # Check if file is readable
+        if not os.access(log_file_path, os.R_OK):
+            return jsonify({
+                'lines': ['[ERROR] Log file exists but is not readable - check permissions.'],
+                'total_lines': 1,
+                'filtered': False,
+                'showing': 1,
+                'status': 'permission_error'
+            })
         
         with open(log_file_path, 'r') as f:
             all_lines = f.readlines()
+        
+        # Handle empty log file
+        if not all_lines:
+            return jsonify({
+                'lines': ['[INFO] Worker log file is empty - worker processes may not have logged anything yet.'],
+                'total_lines': 0,
+                'filtered': False,
+                'showing': 1,
+                'status': 'empty_log'
+            })
         
         # Filter by job_id if provided
         if job_id:
             filtered_lines = [line for line in all_lines if job_id in line]
             log_lines = filtered_lines[-lines:] if len(filtered_lines) > lines else filtered_lines
+            
+            # If no matching lines found for job_id
+            if not log_lines:
+                log_lines = [f'[INFO] No log entries found for job ID: {job_id}']
+                
         else:
             log_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
         
@@ -198,125 +400,45 @@ def get_worker_logs():
             'lines': log_lines,
             'total_lines': len(all_lines),
             'filtered': bool(job_id),
-            'showing': len(log_lines)
+            'showing': len(log_lines),
+            'status': 'success'
         })
         
+    except PermissionError:
+        return jsonify({
+            'lines': ['[ERROR] Permission denied accessing log file - check file permissions.'],
+            'total_lines': 1,
+            'filtered': False,
+            'showing': 1,
+            'status': 'permission_error'
+        })
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'lines': [f'[ERROR] Failed to read log file: {str(e)}'],
+            'total_lines': 1,
+            'filtered': False,
+            'showing': 1,
+            'status': 'error'
+        })
+
+@app.route('/api/logs/test')
+def test_logs_api():
+    """Test endpoint to verify API connectivity"""
+    return jsonify({
+        'status': 'success',
+        'message': 'Logs API is accessible',
+        'server_time': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'log_file_path': '/tmp/worker.log',
+        'log_file_exists': os.path.exists('/tmp/worker.log'),
+        'log_file_readable': os.path.exists('/tmp/worker.log') and os.access('/tmp/worker.log', os.R_OK)
+    })
 
 @app.route('/logs')
 def logs_page():
     return render_template('logs.html')
 
-@app.route('/api/job/<job_id>/chunks')
-def get_job_chunks(job_id):
-    """Get detailed chunk processing information for a specific job"""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Get tables for this job with their processing status
-        cursor.execute('''
-            SELECT table_name, status, start_time, end_time, 
-                   row_count, file_path, error_message
-            FROM table_exports 
-            WHERE job_id = ? 
-            ORDER BY table_name
-        ''', (job_id,))
-        
-        tables = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        
-        # Enhance with chunk information for each table
-        chunks_info = []
-        for table in tables:
-            table_info = table.copy()
-            
-            if table['status'] in ['processing', 'completed'] and table['file_path']:
-                try:
-                    from pathlib import Path
-                    import json
-                    
-                    table_path = Path(table['file_path'])
-                    if table_path.is_dir():
-                        # Check for metadata file
-                        metadata_file = table_path / "_export_metadata.json"
-                        if metadata_file.exists():
-                            with open(metadata_file, 'r') as f:
-                                metadata = json.load(f)
-                            
-                            table_info['chunk_count'] = metadata.get('chunk_count', 1)
-                            table_info['chunk_size'] = metadata.get('chunk_size')
-                            table_info['partitioned'] = metadata.get('partitioned', False)
-                            table_info['files'] = metadata.get('files', [])
-                            
-                            # For processing tables, estimate current chunk
-                            if table['status'] == 'processing':
-                                completed_files = [f for f in table_info['files'] 
-                                                 if (table_path / f).exists()]
-                                table_info['chunks_completed'] = len(completed_files)
-                                table_info['chunks_remaining'] = table_info['chunk_count'] - len(completed_files)
-                                table_info['processing_chunk'] = len(completed_files) + 1 if len(completed_files) < table_info['chunk_count'] else table_info['chunk_count']
-                            else:
-                                table_info['chunks_completed'] = table_info['chunk_count']
-                                table_info['chunks_remaining'] = 0
-                        else:
-                            # Single file or no metadata
-                            table_info['chunk_count'] = 1
-                            table_info['partitioned'] = False
-                            if table['status'] == 'processing':
-                                table_info['chunks_completed'] = 0
-                                table_info['chunks_remaining'] = 1
-                                table_info['processing_chunk'] = 1
-                            else:
-                                table_info['chunks_completed'] = 1
-                                table_info['chunks_remaining'] = 0
-                    else:
-                        # Single file
-                        table_info['chunk_count'] = 1
-                        table_info['partitioned'] = False
-                        if table['status'] == 'processing':
-                            table_info['chunks_completed'] = 0
-                            table_info['chunks_remaining'] = 1
-                            table_info['processing_chunk'] = 1
-                        else:
-                            table_info['chunks_completed'] = 1
-                            table_info['chunks_remaining'] = 0
-                            
-                except Exception as e:
-                    table_info['error'] = f'Error reading chunk details: {str(e)}'
-                    table_info['chunk_count'] = 1
-                    table_info['partitioned'] = False
-            else:
-                # Queued or failed tables
-                table_info['chunk_count'] = 1
-                table_info['partitioned'] = False
-                table_info['chunks_completed'] = 0
-                table_info['chunks_remaining'] = 1 if table['status'] in ['queued', 'processing'] else 0
-            
-            chunks_info.append(table_info)
-        
-        return jsonify({
-            'job_id': job_id,
-            'tables': chunks_info,
-            'summary': {
-                'total_tables': len(chunks_info),
-                'processing_tables': len([t for t in chunks_info if t['status'] == 'processing']),
-                'completed_tables': len([t for t in chunks_info if t['status'] == 'completed']),
-                'failed_tables': len([t for t in chunks_info if t['status'] == 'failed']),
-                'total_chunks': sum(t.get('chunk_count', 1) for t in chunks_info),
-                'completed_chunks': sum(t.get('chunks_completed', 0) for t in chunks_info),
-                'processing_chunks': sum(1 for t in chunks_info if t['status'] == 'processing' and t.get('chunks_remaining', 0) > 0)
-            }
-        })
-        
-    except Exception as e:
-        app.logger.error(f"Error getting chunk details: {str(e)}")
-        return jsonify({'error': f'Failed to get chunk details: {str(e)}'}), 500
-
 @app.route('/chunks')
 def chunks_page():
-    """Chunk processing monitoring page"""
     return render_template('chunks.html')
 
 @app.route('/api/jobs', methods=['POST'])
@@ -339,73 +461,25 @@ def create_job():
 
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO jobs (job_id, db_username, overall_status, start_time) VALUES (?, ?, ?, ?)",
+        cursor.execute("INSERT INTO jobs (job_id, db_username, status, start_time) VALUES (?, ?, ?, ?)",
                        (job_id, data['db_username'], 'queued', time.strftime('%Y-%m-%d %H:%M:%S')))
         cursor.execute("INSERT INTO job_configs (job_id, config) VALUES (?, ?)",
                        (job_id, json.dumps(data)))
         conn.commit()
         conn.close()
 
+        # Start the job using Celery
+        execute_export_job.delay(job_id, data)
+
         return jsonify({
             'job_id': job_id, 
-            'message': 'Job created successfully',
+            'message': 'Job created and queued successfully',
             'status': 'queued'
         })
         
     except Exception as e:
         app.logger.error(f"Error creating job: {str(e)}")
         return jsonify({'error': f'Failed to create job: {str(e)}'}), 500
-
-@app.route('/api/job/<job_id>/cancel', methods=['POST'])
-def cancel_job(job_id):
-    """Cancel a running or queued job"""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Check current job status
-        cursor.execute('SELECT overall_status FROM jobs WHERE job_id = ?', (job_id,))
-        result = cursor.fetchone()
-        
-        if not result:
-            conn.close()
-            return jsonify({'error': 'Job not found'}), 404
-        
-        current_status = result[0]
-        
-        # Only allow cancellation of queued or running jobs
-        if current_status not in ['queued', 'running']:
-            conn.close()
-            return jsonify({'error': f'Cannot cancel job with status: {current_status}'}), 400
-        
-        # Update job status to cancelled
-        cursor.execute(
-            "UPDATE jobs SET overall_status = ?, end_time = ? WHERE job_id = ?",
-            ('cancelled', time.strftime('%Y-%m-%d %H:%M:%S'), job_id)
-        )
-        
-        # Log the cancellation
-        cursor.execute(
-            "INSERT INTO errors (job_id, timestamp, error_message, context) VALUES (?, ?, ?, ?)",
-            (job_id, time.strftime('%Y-%m-%d %H:%M:%S'), 
-             'Job cancelled by user request', 
-             json.dumps({'action': 'user_cancellation', 'previous_status': current_status}))
-        )
-        
-        conn.commit()
-        conn.close()
-        
-        app.logger.info(f"Job {job_id} cancelled by user request")
-        
-        return jsonify({
-            'message': f'Job {job_id} has been cancelled',
-            'previous_status': current_status,
-            'new_status': 'cancelled'
-        })
-        
-    except Exception as e:
-        app.logger.error(f"Error cancelling job {job_id}: {str(e)}")
-        return jsonify({'error': f'Failed to cancel job: {str(e)}'}), 500
 
 @app.route('/api/discover-schema', methods=['POST'])
 def discover_schema():
@@ -422,21 +496,21 @@ def discover_schema():
             return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
         
         # Import database functions
-        from adu.worker import get_database_connection, discover_tables, discover_schemas, discover_tables_by_schema
+        from .worker import discover_tables, discover_schemas, discover_tables_by_schema
         
-        # Connect to database
-        db_conn = get_database_connection(
+        # Initialize connection pool for this request
+        initialize_connection_pool(
             data['db_type'], 
             data['db_host'], 
             int(data['db_port']), 
             data['db_username'], 
             data['db_password'],
-            data.get('db_name')
+            data.get('db_name') or ('postgres' if data['db_type'].lower() in ['postgresql', 'greenplum'] else 'defaultdb')
         )
         
-        # Discover tables
-        tables = discover_tables(db_conn, data['db_type'])
-        db_conn.close()
+        # Use connection pool
+        with get_pooled_connection() as db_conn:
+            tables = discover_tables(db_conn, data['db_type'])
         
         return jsonify({
             'tables': tables,
@@ -464,7 +538,7 @@ def get_table_info():
             return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
         
         # Import database functions
-        from adu.worker import get_database_connection
+        from .worker import get_database_connection
         
         # Connect to database
         db_conn = get_database_connection(
@@ -593,21 +667,21 @@ def discover_database_schemas():
             return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
         
         # Import database functions
-        from adu.worker import get_database_connection, discover_schemas
+        from .worker import discover_schemas
         
-        # Connect to database
-        db_conn = get_database_connection(
+        # Initialize connection pool for this request
+        initialize_connection_pool(
             data['db_type'], 
             data['db_host'], 
             int(data['db_port']), 
             data['db_username'], 
             data['db_password'],
-            data.get('db_name')
+            data.get('db_name') or ('postgres' if data['db_type'].lower() in ['postgresql', 'greenplum'] else 'defaultdb')
         )
         
-        # Discover schemas
-        schemas = discover_schemas(db_conn, data['db_type'])
-        db_conn.close()
+        # Use connection pool
+        with get_pooled_connection() as db_conn:
+            schemas = discover_schemas(db_conn, data['db_type'])
         
         return jsonify({
             'schemas': schemas,
@@ -635,22 +709,22 @@ def discover_schema_tables():
             return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
         
         # Import database functions
-        from adu.worker import get_database_connection, discover_tables_by_schema
+        from .worker import discover_tables_by_schema
         
-        # Connect to database
-        db_conn = get_database_connection(
+        # Initialize connection pool for this request
+        initialize_connection_pool(
             data['db_type'], 
             data['db_host'], 
             int(data['db_port']), 
             data['db_username'], 
             data['db_password'],
-            data.get('db_name')
+            data.get('db_name') or ('postgres' if data['db_type'].lower() in ['postgresql', 'greenplum'] else 'defaultdb')
         )
         
-        # Discover tables by schema
+        # Use connection pool
         schema_name = data.get('schema_name')  # Optional - if not provided, returns all tables
-        tables = discover_tables_by_schema(db_conn, data['db_type'], schema_name)
-        db_conn.close()
+        with get_pooled_connection() as db_conn:
+            tables = discover_tables_by_schema(db_conn, data['db_type'], schema_name)
         
         # Group tables by schema for better organization
         schemas_dict = {}

@@ -17,11 +17,20 @@ def init_db():
         CREATE TABLE IF NOT EXISTS jobs (
             job_id TEXT PRIMARY KEY,
             db_username TEXT,
+            status TEXT DEFAULT 'queued',
             overall_status TEXT DEFAULT 'queued',
             celery_task_id TEXT,
             start_time DATETIME,
             end_time DATETIME,
             error_message TEXT,
+            progress_percent INTEGER DEFAULT 0,
+            tables_total INTEGER DEFAULT 0,
+            tables_completed INTEGER DEFAULT 0,
+            tables_failed INTEGER DEFAULT 0,
+            rows_total BIGINT DEFAULT 0,
+            rows_processed BIGINT DEFAULT 0,
+            throughput_rows_per_sec INTEGER DEFAULT 0,
+            estimated_completion DATETIME,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -56,10 +65,17 @@ def init_db():
             table_name TEXT,
             status TEXT,
             row_count INTEGER,
+            rows_processed INTEGER DEFAULT 0,
+            chunk_count INTEGER DEFAULT 1,
             file_path TEXT,
+            file_size_mb REAL DEFAULT 0,
+            throughput_rows_per_sec INTEGER DEFAULT 0,
             start_time DATETIME,
             end_time DATETIME,
             error_message TEXT,
+            retry_count INTEGER DEFAULT 0,
+            validation_status TEXT DEFAULT 'pending',
+            checksum TEXT,
             FOREIGN KEY (job_id) REFERENCES jobs (job_id)
         )
     ''')

@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
 """
 Celery tasks for ADU Export Application
-Asynchronous job processing tasks
+Asynchronous job processing tasks with enhanced logging and SQLite queue
 """
 
-import logging
 import time
 import traceback
 from celery import current_task
 from adu.celery_config import celery_app
 from adu.worker import process_data
-from adu.database import get_db_connection
-
-# Configure logging for tasks
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+from adu.enhanced_logger import logger
+from adu.sqlite_writer import get_sqlite_writer
 
 @celery_app.task(bind=True, name='adu.tasks.execute_export_job')
 def execute_export_job(self, job_id, config):
@@ -32,24 +25,24 @@ def execute_export_job(self, job_id, config):
         dict: Job execution results
     """
     task_id = self.request.id
-    logger.info(f"Starting export job {job_id} (task: {task_id})")
+    logger.info(f"Starting export job {job_id} (Celery task: {task_id})")
+    
+    # Get SQLite writer for efficient database operations
+    sqlite_writer = get_sqlite_writer()
     
     # Update job status to 'running'
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "UPDATE jobs SET status = ?, celery_task_id = ?, start_time = ? WHERE job_id = ?",
-            ('running', task_id, time.strftime('%Y-%m-%d %H:%M:%S'), job_id)
+        sqlite_writer.job_update(
+            job_id=job_id,
+            status='running',
+            celery_task_id=task_id,
+            start_time=time.strftime('%Y-%m-%d %H:%M:%S')
         )
-        conn.commit()
-        conn.close()
         
-        logger.info(f"Job {job_id} status updated to 'running'")
+        logger.info("Job status updated to 'running'")
         
     except Exception as e:
-        logger.error(f"Failed to update job {job_id} status to running: {str(e)}")
+        logger.error(f"Failed to update job status to running: {str(e)}")
         # Continue execution - this is not critical
     
     # Update task progress
@@ -64,7 +57,12 @@ def execute_export_job(self, job_id, config):
     
     try:
         # Execute the actual export process
-        logger.info(f"Executing export process for job {job_id}")
+        logger.info("Executing database export process")
+        
+        # Log configuration summary
+        tables_count = len(config.get('tables', []))
+        db_info = f"{config.get('db_type', 'unknown')}://{config.get('db_host', 'unknown')}:{config.get('db_port', 'unknown')}"
+        logger.info(f"Processing {tables_count} tables from {db_info}")
         
         # Update progress
         self.update_state(
@@ -76,25 +74,11 @@ def execute_export_job(self, job_id, config):
             }
         )
         
-        # Call the main processing function from worker.py
+        # Call the enhanced worker processing function
         result = process_data(job_id, config)
         
-        # Update job status to 'completed'
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "UPDATE jobs SET status = ?, end_time = ? WHERE job_id = ?",
-                ('completed', time.strftime('%Y-%m-%d %H:%M:%S'), job_id)
-            )
-            conn.commit()
-            conn.close()
-            
-            logger.info(f"Job {job_id} completed successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to update job {job_id} status to completed: {str(e)}")
+        # Job completion is now handled by the worker's SQLite queue system
+        logger.info("Export process completed successfully")
         
         # Return success result
         return {
@@ -105,26 +89,17 @@ def execute_export_job(self, job_id, config):
         }
         
     except Exception as exc:
-        # Log the full exception traceback
-        logger.error(f"Export job {job_id} failed with exception: {str(exc)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        # Log the full exception with enhanced logging
+        error_message = str(exc)
+        tb = traceback.format_exc()
+        logger.error(f"Export job failed: {error_message}")
         
-        # Update job status to 'failed'
+        # Use SQLite writer to log the failure
         try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "UPDATE jobs SET status = ?, end_time = ?, error_message = ? WHERE job_id = ?",
-                ('failed', time.strftime('%Y-%m-%d %H:%M:%S'), str(exc), job_id)
-            )
-            conn.commit()
-            conn.close()
-            
-            logger.info(f"Job {job_id} status updated to 'failed'")
-            
+            sqlite_writer.job_failed(job_id, error_message)
+            sqlite_writer.log_error(job_id, error_message, tb, str(config))
         except Exception as e:
-            logger.error(f"Failed to update job {job_id} status to failed: {str(e)}")
+            logger.error(f"Failed to log job failure to database: {str(e)}")
         
         # Update task state to failure
         self.update_state(
@@ -143,7 +118,7 @@ def execute_export_job(self, job_id, config):
 @celery_app.task(name='adu.tasks.get_job_status')
 def get_job_status(job_id):
     """
-    Get the current status of a job
+    Get the current status of a job using SQLite writer queue
     
     Args:
         job_id (str): Job identifier
@@ -152,26 +127,28 @@ def get_job_status(job_id):
         dict: Job status information
     """
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        sqlite_writer = get_sqlite_writer()
         
-        cursor.execute(
-            "SELECT status, start_time, end_time, error_message, celery_task_id FROM jobs WHERE job_id = ?",
-            (job_id,)
-        )
+        query = """
+            SELECT status, start_time, end_time, error_message, celery_task_id,
+                   tables_total, tables_completed, tables_failed, progress_percent
+            FROM jobs WHERE job_id = ?
+        """
         
-        result = cursor.fetchone()
-        conn.close()
+        result = sqlite_writer.query(query, (job_id,), fetchone=True, timeout=5.0)
         
         if result:
-            status, start_time, end_time, error_message, celery_task_id = result
             return {
                 'job_id': job_id,
-                'status': status,
-                'start_time': start_time,
-                'end_time': end_time,
-                'error_message': error_message,
-                'celery_task_id': celery_task_id
+                'status': result['status'],
+                'start_time': result['start_time'],
+                'end_time': result['end_time'],
+                'error_message': result['error_message'],
+                'celery_task_id': result['celery_task_id'],
+                'tables_total': result['tables_total'],
+                'tables_completed': result['tables_completed'],
+                'tables_failed': result['tables_failed'],
+                'progress_percent': result['progress_percent']
             }
         else:
             return {
@@ -191,7 +168,7 @@ def get_job_status(job_id):
 @celery_app.task(name='adu.tasks.cancel_job')
 def cancel_job(job_id):
     """
-    Cancel a running job
+    Cancel a running job using SQLite writer queue
     
     Args:
         job_id (str): Job identifier
@@ -200,16 +177,11 @@ def cancel_job(job_id):
         dict: Cancellation result
     """
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        sqlite_writer = get_sqlite_writer()
         
-        # Get the celery task ID
-        cursor.execute(
-            "SELECT celery_task_id, status FROM jobs WHERE job_id = ?",
-            (job_id,)
-        )
-        
-        result = cursor.fetchone()
+        # Get current job status and celery task ID
+        query = "SELECT celery_task_id, status FROM jobs WHERE job_id = ?"
+        result = sqlite_writer.query(query, (job_id,), fetchone=True, timeout=5.0)
         
         if not result:
             return {
@@ -218,7 +190,8 @@ def cancel_job(job_id):
                 'message': 'Job not found'
             }
         
-        celery_task_id, current_status = result
+        celery_task_id = result['celery_task_id']
+        current_status = result['status']
         
         if current_status in ['completed', 'failed', 'cancelled']:
             return {
@@ -227,20 +200,19 @@ def cancel_job(job_id):
                 'message': f'Job is already {current_status} and cannot be cancelled'
             }
         
-        # Update job status to cancelled
-        cursor.execute(
-            "UPDATE jobs SET status = ?, end_time = ? WHERE job_id = ?",
-            ('cancelled', time.strftime('%Y-%m-%d %H:%M:%S'), job_id)
+        # Update job status to cancelled using SQLite writer
+        sqlite_writer.job_update(
+            job_id=job_id,
+            status='cancelled',
+            end_time=time.strftime('%Y-%m-%d %H:%M:%S')
         )
-        conn.commit()
-        conn.close()
         
         # Revoke the Celery task if it has a task ID
         if celery_task_id:
             celery_app.control.revoke(celery_task_id, terminate=True)
-            logger.info(f"Revoked Celery task {celery_task_id} for job {job_id}")
+            logger.info(f"Revoked Celery task {celery_task_id}")
         
-        logger.info(f"Job {job_id} cancelled successfully")
+        logger.info("Job cancelled successfully")
         
         return {
             'job_id': job_id,

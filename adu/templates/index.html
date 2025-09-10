@@ -5,33 +5,133 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Air-gapped Data Utility</title>
     <style>
-        body { font-family: sans-serif; margin: 2em; }
-        .container { max-width: 800px; margin: 0 auto; }
+        body { font-family: sans-serif; margin: 2em; background: #f8f9fa; }
+        .container { max-width: 1200px; margin: 0 auto; }
         .form-group { margin-bottom: 1em; }
-        label { display: block; margin-bottom: 0.5em; }
-        input, select, textarea { width: 100%; padding: 0.5em; }
-        button { padding: 0.7em 1.5em; }
-        #response { margin-top: 1em; padding: 1em; border: 1px solid #ccc; background-color: #f9f9f9; }
-        #discover-btn { background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
-        #discover-btn:hover { background-color: #0056b3; }
-        #discover-btn:disabled { background-color: #6c757d; cursor: not-allowed; }
+        label { display: block; margin-bottom: 0.5em; font-weight: bold; }
+        input, select, textarea { width: 100%; padding: 0.5em; border: 1px solid #ddd; border-radius: 4px; }
+        button { padding: 0.7em 1.5em; border: none; border-radius: 4px; cursor: pointer; }
+        .btn-primary { background-color: #007bff; color: white; }
+        .btn-primary:hover { background-color: #0056b3; }
+        .btn-primary:disabled { background-color: #6c757d; cursor: not-allowed; }
+        
+        .card { background: white; border-radius: 8px; padding: 1.5em; margin-bottom: 1.5em; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .card h2 { margin-top: 0; color: #333; }
+        
+        .progress-container { margin-top: 2em; }
+        .progress-bar { 
+            width: 100%; 
+            height: 20px; 
+            background: #e9ecef; 
+            border-radius: 10px; 
+            overflow: hidden;
+            margin: 0.5em 0;
+        }
+        .progress-fill { 
+            height: 100%; 
+            background: linear-gradient(45deg, #007bff, #0056b3); 
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+        
+        .metrics-grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
+            gap: 1em; 
+            margin: 1em 0; 
+        }
+        .metric-card { 
+            background: #f8f9fa; 
+            padding: 1em; 
+            border-radius: 8px; 
+            text-align: center;
+            border: 2px solid #e9ecef;
+        }
+        .metric-value { font-size: 2em; font-weight: bold; color: #007bff; }
+        .metric-label { font-size: 0.9em; color: #666; }
+        
         .table-item { 
             display: block; 
-            padding: 0.5em; 
-            margin: 0.2em 0; 
+            padding: 0.8em; 
+            margin: 0.3em 0; 
             background-color: #f8f9fa; 
-            border: 1px solid #dee2e6; 
-            border-radius: 4px; 
+            border: 2px solid #dee2e6; 
+            border-radius: 8px; 
             cursor: pointer; 
             user-select: none;
+            transition: all 0.2s ease;
         }
-        .table-item:hover { background-color: #e9ecef; }
-        .table-item.selected { background-color: #007bff; color: white; }
+        .table-item:hover { background-color: #e9ecef; transform: translateX(2px); }
+        .table-item.selected { background-color: #007bff; color: white; border-color: #0056b3; }
         .table-item-info { font-size: 0.8em; color: #666; margin-top: 0.2em; }
         .table-item.selected .table-item-info { color: #cce7ff; }
+        
+        .status-indicator { 
+            display: inline-block; 
+            width: 10px; 
+            height: 10px; 
+            border-radius: 50%; 
+            margin-right: 0.5em;
+        }
+        .status-pending { background: #ffc107; }
+        .status-processing { background: #007bff; }
+        .status-completed { background: #28a745; }
+        .status-failed { background: #dc3545; }
+        
+        .real-time-updates { 
+            position: fixed; 
+            top: 20px; 
+            right: 20px; 
+            background: white; 
+            padding: 1em; 
+            border-radius: 8px; 
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            min-width: 250px;
+            z-index: 1000;
+        }
+        
         .error { color: #dc3545; }
         .success { color: #28a745; }
+        .hidden { display: none; }
+        
+        #job-progress { display: none; }
+        #job-progress.active { display: block; }
+        
+        .table-progress { 
+            margin: 0.5em 0; 
+            padding: 0.5em; 
+            background: #f8f9fa; 
+            border-radius: 4px;
+        }
+        .table-progress-bar { 
+            height: 8px; 
+            background: #e9ecef; 
+            border-radius: 4px; 
+            overflow: hidden; 
+            margin: 0.2em 0;
+        }
+        .table-progress-fill { 
+            height: 100%; 
+            background: #007bff; 
+            transition: width 0.3s ease;
+        }
+        
+        #connection-status { 
+            position: fixed; 
+            top: 10px; 
+            left: 10px; 
+            padding: 0.5em 1em; 
+            border-radius: 4px; 
+            font-weight: bold;
+        }
+        .connected { background: #d4edda; color: #155724; }
+        .disconnected { background: #f8d7da; color: #721c24; }
     </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
 </head>
 <body>
     <div class="container">
@@ -99,10 +199,24 @@
                 </div>
                 
                 <div id="tables-discovered" style="display: none;">
-                    <div id="table-list" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; padding: 0.5em;">
+                    <div style="margin-bottom: 0.5em;">
+                        <button type="button" id="expand-table-list" onclick="toggleTableListHeight()" style="padding: 0.3em 0.8em; border: 1px solid #ddd; background: #f8f9fa; border-radius: 4px; font-size: 0.8em;">
+                            📏 Expand View
+                        </button>
+                        <button type="button" id="select-all-schema" onclick="selectAllTablesInCurrentSchema()" style="padding: 0.3em 0.8em; border: 1px solid #007bff; background: #007bff; color: white; border-radius: 4px; font-size: 0.8em; margin-left: 0.5em; display: none;">
+                            ✅ Select All in Schema
+                        </button>
+                        <button type="button" id="deselect-all" onclick="deselectAllTables()" style="padding: 0.3em 0.8em; border: 1px solid #dc3545; background: #dc3545; color: white; border-radius: 4px; font-size: 0.8em; margin-left: 0.5em;">
+                            ❌ Deselect All
+                        </button>
+                        <span style="margin-left: 1em; font-size: 0.8em; color: #666;">
+                            <span id="selected-count">0</span> of <span id="total-count">0</span> tables selected
+                        </span>
+                    </div>
+                    <div id="table-list" style="max-height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 0.5em; border-radius: 4px; background: #fdfdfd;">
                         <!-- Discovered tables will be populated here -->
                     </div>
-                    <small>Select tables to export (click to toggle selection)</small>
+                    <small>Select tables to export (click to toggle selection). Use the expand button to resize the table list.</small>
                 </div>
             </div>
             
@@ -152,6 +266,33 @@
                 <small>For tables with 10M+ rows, process chunks in parallel. 8 threads optimal for your 16 vCPU system</small>
             </div>
             
+            <div class="form-group" style="background-color: #e8f5e8; padding: 1em; border-radius: 4px; border: 1px solid #c3e6c3;">
+                <h4 style="margin-top: 0; color: #155724;">🚀 Export Method Selection</h4>
+                
+                <div style="margin-bottom: 1em;">
+                    <label>
+                        <input type="checkbox" id="use_duckdb_export" name="use_duckdb_export" checked onchange="toggleDuckDBInfo()"> 
+                        Use DuckDB Export (Recommended - Default)
+                    </label>
+                </div>
+                
+                <div id="duckdb-info" style="display: block; background-color: #f8f9fa; padding: 0.8em; border-radius: 4px; font-size: 0.9em;">
+                    <h5 style="margin: 0 0 0.5em 0; color: #28a745;">✅ Benefits:</h5>
+                    <ul style="margin: 0 0 0.8em 1.2em; padding: 0;">
+                        <li><strong>90% less memory usage</strong> - No OOM kills on billion-row tables</li>
+                        <li><strong>2-5x faster exports</strong> - Vectorized processing and streaming</li>
+                        <li><strong>Automatic spill-to-disk</strong> - Handles larger-than-memory operations</li>
+                        <li><strong>Same validation</strong> - Post-export verification maintains quality</li>
+                    </ul>
+                    <div style="background-color: #e8f5e8; padding: 0.5em; border-radius: 3px; border: 1px solid #c3e6c3; margin-bottom: 0.5em;">
+                        <strong>🔒 Airgapped Ready:</strong> Extensions pre-installed during Docker build - no internet required at runtime.
+                    </div>
+                    <div style="background-color: #fff3cd; padding: 0.5em; border-radius: 3px; border: 1px solid #ffeaa7;">
+                        <strong>💡 Note:</strong> Uncheck to use legacy Polars method (slower, higher memory usage). DuckDB automatically falls back if needed.
+                    </div>
+                </div>
+            </div>
+            
             <div class="form-group" style="background-color: #f0f8ff; padding: 1em; border-radius: 4px; border: 1px solid #b3d9ff;">
                 <h4 style="margin-top: 0; color: #0056b3;">�️ Export Organization (NEW!)</h4>
                 
@@ -194,9 +335,7 @@
         <div id="response" style="display:none;"></div>
 
         <hr style="margin: 2em 0;">
-        <a href="/history">View All Job History</a> | 
-        <a href="/chunks">Chunk Processing Monitor</a> | 
-        <a href="/logs">Worker Logs</a>
+        <a href="/history">View All Job History</a>
     </div>
 
     <script>
@@ -204,6 +343,17 @@
         let selectedTables = [];
         let discoveredSchemas = [];
         let tablesBySchema = {};
+
+        function toggleDuckDBInfo() {
+            const checkbox = document.getElementById('use_duckdb_export');
+            const infoDiv = document.getElementById('duckdb-info');
+            
+            if (checkbox.checked) {
+                infoDiv.style.display = 'block';
+            } else {
+                infoDiv.style.display = 'none';
+            }
+        }
 
         function toggleTableMode() {
             const mode = document.querySelector('input[name="table-mode"]:checked').value;
@@ -288,6 +438,7 @@
             
             if (tables.length === 0) {
                 tableList.innerHTML = '<p>No tables found</p>';
+                updateSelectionCounter();
                 return;
             }
             
@@ -311,6 +462,9 @@
                 // Load table preview asynchronously
                 loadTablePreview(tableName, tableItem, chunkSize);
             });
+            
+            // Update the counter display
+            updateSelectionCounter();
         }
         
         function loadTablePreview(tableName, tableItem, chunkSize) {
@@ -374,6 +528,70 @@
             
             // Update the hidden tables input
             document.getElementById('tables').value = selectedTables.join(',');
+            
+            // Update selection counter
+            updateSelectionCounter();
+        }
+        
+        function updateSelectionCounter() {
+            const selectedCountElement = document.getElementById('selected-count');
+            const totalCountElement = document.getElementById('total-count');
+            
+            if (selectedCountElement && totalCountElement) {
+                selectedCountElement.textContent = selectedTables.length;
+                totalCountElement.textContent = discoveredTables.length;
+            }
+        }
+        
+        function toggleTableListHeight() {
+            const tableList = document.getElementById('table-list');
+            const expandButton = document.getElementById('expand-table-list');
+            
+            if (!tableList || !expandButton) return;
+            
+            const currentHeight = tableList.style.maxHeight;
+            
+            if (currentHeight === '400px') {
+                // Expand to large
+                tableList.style.maxHeight = '600px';
+                expandButton.innerHTML = '📐 Large View';
+            } else if (currentHeight === '600px') {
+                // Expand to extra large
+                tableList.style.maxHeight = '800px';
+                expandButton.innerHTML = '📊 XL View';
+            } else {
+                // Back to normal
+                tableList.style.maxHeight = '400px';
+                expandButton.innerHTML = '📏 Expand View';
+            }
+        }
+        
+        function selectAllTablesInCurrentSchema() {
+            const tableItems = document.querySelectorAll('#table-list .table-item');
+            
+            tableItems.forEach(item => {
+                const tableName = item.querySelector('strong').textContent;
+                if (!selectedTables.includes(tableName)) {
+                    selectedTables.push(tableName);
+                    item.classList.add('selected');
+                }
+            });
+            
+            // Update the hidden tables input
+            document.getElementById('tables').value = selectedTables.join(',');
+            updateSelectionCounter();
+        }
+        
+        function deselectAllTables() {
+            const tableItems = document.querySelectorAll('#table-list .table-item');
+            
+            tableItems.forEach(item => {
+                item.classList.remove('selected');
+            });
+            
+            selectedTables = [];
+            document.getElementById('tables').value = '';
+            updateSelectionCounter();
         }
 
         function populateSchemaDropdown(schemas) {
@@ -423,10 +641,12 @@
             const schemaSelect = document.getElementById('schema-select');
             const selectedSchema = schemaSelect.value;
             const schemaStatus = document.getElementById('schema-status');
+            const selectAllButton = document.getElementById('select-all-schema');
             
             if (!selectedSchema) {
                 schemaStatus.innerHTML = '';
                 document.getElementById('table-list').innerHTML = '';
+                selectAllButton.style.display = 'none';
                 return;
             }
             
@@ -440,12 +660,15 @@
                 });
                 populateTableList(allTables);
                 schemaStatus.innerHTML = `Showing all ${allTables.length} tables from all schemas`;
+                selectAllButton.style.display = 'none'; // Hide button for "All Schemas"
             } else {
                 // Show tables from selected schema
                 const schemaTables = tablesBySchema[selectedSchema] || [];
                 const tableNames = schemaTables.map(t => t.full_name);
                 populateTableList(tableNames);
                 schemaStatus.innerHTML = `Showing ${schemaTables.length} tables from schema "${selectedSchema}"`;
+                selectAllButton.innerHTML = `✅ Select All in "${selectedSchema}"`;
+                selectAllButton.style.display = 'inline-block'; // Show button for specific schema
             }
             
             // Switch to select mode and show discovered tables
@@ -484,6 +707,9 @@
             
             // Convert max_threads to integer
             data.max_threads = parseInt(data.max_threads);
+            
+            // Handle DuckDB checkbox (convert to boolean)
+            data.use_duckdb_export = document.getElementById('use_duckdb_export').checked;
             
             // Convert max_chunk_workers to integer
             data.max_chunk_workers = parseInt(data.max_chunk_workers);

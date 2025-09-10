@@ -17,8 +17,9 @@ class CeleryConfig:
     task_serializer = 'json'
     accept_content = ['json']
     result_serializer = 'json'
-    timezone = 'UTC'
-    enable_utc = True
+    # Use system timezone instead of UTC for consistency with timestamps
+    timezone = None  # Uses system timezone
+    enable_utc = False
     
     # Task routing
     task_routes = {
@@ -28,7 +29,8 @@ class CeleryConfig:
     # Worker settings
     worker_prefetch_multiplier = 1  # Only take one task at a time
     task_acks_late = True  # Acknowledge task only after completion
-    worker_max_tasks_per_child = 1000  # Restart worker after 1000 tasks
+    worker_max_tasks_per_child = 10  # Restart worker after 10 tasks (prevent memory leaks)
+    worker_max_memory_per_child = 8 * 1024 * 1024  # Restart worker at 8GB memory (KB units)
     
     # Task result settings
     result_expires = 3600  # Results expire after 1 hour

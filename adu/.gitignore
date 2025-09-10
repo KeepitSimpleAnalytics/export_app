@@ -1,0 +1,27 @@
+# Ignore archive and binary files
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.rar
+*.7z
+*.bz2
+*.xz
+*.lz
+*.lzma
+*.Z
+*.img
+*.iso
+*.bin
+*.exe
+*.dll
+*.msi
+*.dmg
+*.pkg
+*.deb
+*.rpm
+*.swp
+*.swo
+*.bak
+*.tmp

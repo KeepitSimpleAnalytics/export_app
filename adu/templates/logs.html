@@ -6,7 +6,7 @@
     <title>Worker Logs</title>
     <style>
         body { font-family: sans-serif; margin: 2em; }
-        .container { max-width: 1200px; margin: 0 auto; }
+        .container { max-width: 95vw; margin: 0 auto; }
         .nav-link { display: inline-block; margin: 1em 0; color: #007bff; text-decoration: none; }
         .nav-link:hover { text-decoration: underline; }
         .controls { margin: 1em 0; display: flex; gap: 1em; align-items: center; flex-wrap: wrap; }
@@ -16,11 +16,13 @@
             border: 1px solid #dee2e6; 
             border-radius: 4px; 
             padding: 1em; 
-            max-height: 600px; 
+            max-height: 80vh; 
+            min-height: 600px;
             overflow-y: auto; 
             font-family: 'Courier New', monospace; 
-            font-size: 0.9em; 
+            font-size: 0.85em; 
             white-space: pre-wrap; 
+            line-height: 1.3;
         }
         .log-info { margin: 1em 0; color: #666; font-size: 0.9em; }
         .error { color: #dc3545; }
@@ -67,15 +69,10 @@
                     <option value="1000">1000</option>
                 </select>
             </label>
-                    <option value="50">50</option>
-                    <option value="100" selected>100</option>
-                    <option value="200">200</option>
-                    <option value="500">500</option>
-                    <option value="1000">1000</option>
-                </select>
-            </label>
             
             <button class="refresh-btn" onclick="loadLogs()">Refresh</button>
+            
+            <button class="refresh-btn" onclick="testApiConnectivity()" style="background-color: #28a745;">Test API</button>
             
             <label class="auto-refresh">
                 <input type="checkbox" id="auto-refresh" checked>
@@ -95,6 +92,42 @@
     <script>
         let refreshInterval;
         
+        function testApiConnectivity() {
+            const logInfo = document.getElementById('log-info');
+            const logContainer = document.getElementById('log-container');
+            
+            logInfo.innerHTML = '<span style="color: #007bff;">🔄 Testing API connectivity...</span>';
+            
+            fetch('/api/logs/test')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    logInfo.innerHTML = `
+                        <span class="info">✅ API Connection Successful!</span><br>
+                        Server Time: ${data.server_time}<br>
+                        Log File Exists: ${data.log_file_exists ? '✅' : '❌'}<br>
+                        Log File Readable: ${data.log_file_readable ? '✅' : '❌'}<br>
+                        Path: ${data.log_file_path}
+                    `;
+                    
+                    if (data.log_file_exists && data.log_file_readable) {
+                        setTimeout(() => loadLogs(), 1000);
+                    } else {
+                        logContainer.textContent = data.log_file_exists ? 
+                            'Log file exists but is not readable.' : 
+                            'Log file does not exist yet. Start a worker process to create logs.';
+                    }
+                })
+                .catch(error => {
+                    logInfo.innerHTML = `<span class="error">❌ API Connection Failed: ${error.message}</span>`;
+                    logContainer.textContent = `Connectivity test failed: ${error.message}`;
+                });
+        }
+        
         function loadLogs() {
             const jobFilter = document.getElementById('job-filter').value.trim();
             const contentFilter = document.getElementById('content-filter').value;
@@ -109,7 +142,12 @@
             }
             
             fetch(`/api/logs/worker?${params}`)
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    return response.json();
+                })
                 .then(data => {
                     if (data.error) {
                         logContainer.textContent = `Error: ${data.error}`;
@@ -117,15 +155,34 @@
                         return;
                     }
                     
+                    // Handle different status conditions
+                    if (data.status && data.status !== 'success') {
+                        let statusMessage = '';
+                        switch (data.status) {
+                            case 'log_file_not_found':
+                                statusMessage = 'ℹ️ Worker hasn\'t started yet - log file will appear once worker processes begin.';
+                                break;
+                            case 'empty_log':
+                                statusMessage = 'ℹ️ Worker log is empty - no activity logged yet.';
+                                break;
+                            case 'permission_error':
+                                statusMessage = '⚠️ Cannot access log file due to permissions.';
+                                break;
+                            default:
+                                statusMessage = `Status: ${data.status}`;
+                        }
+                        logInfo.innerHTML = statusMessage;
+                    }
+                    
                     // Apply content filtering
                     let filteredLines = data.lines;
                     if (contentFilter) {
                         const filterPatterns = {
-                            'chunk': /chunk|partition|split/i,
-                            'processing': /processing|export|write|read/i,
-                            'export': /export|parquet|file|save/i,
-                            'error': /error|exception|failed|traceback/i,
-                            'polars': /polars|dataframe|lazy/i
+                            'chunk': /chunk|partition|split|part_\d+|chunks_|processing chunk/i,
+                            'processing': /processing|export|write|read|starting|completed|finished/i,
+                            'export': /export|parquet|file|save|table.*rows|successfully exported/i,
+                            'error': /error|exception|failed|traceback|critical|warning/i,
+                            'polars': /polars|dataframe|lazy|read_database|write_parquet/i
                         };
                         
                         const pattern = filterPatterns[contentFilter];
@@ -150,11 +207,11 @@
                         logLine.className = 'log-line';
                         
                         // Add highlighting for different log levels
-                        if (line.includes('ERROR')) {
+                        if (/ERROR|CRITICAL|Failed|Exception/i.test(line)) {
                             logLine.classList.add('error');
-                        } else if (line.includes('WARNING')) {
+                        } else if (/WARNING|Warning/i.test(line)) {
                             logLine.classList.add('warning');
-                        } else if (line.includes('INFO')) {
+                        } else if (/SUCCESS|completed|successfully|finished/i.test(line)) {
                             logLine.classList.add('info');
                         }
                         
@@ -184,8 +241,26 @@
                     logContainer.scrollTop = logContainer.scrollHeight;
                 })
                 .catch(error => {
-                    logContainer.textContent = `Error loading logs: ${error}`;
-                    logInfo.textContent = '';
+                    console.error('Log fetch error:', error);
+                    
+                    let errorMessage = 'Error loading logs: ';
+                    if (error.message.includes('Failed to fetch')) {
+                        errorMessage += 'Network connection failed. Please check:\n';
+                        errorMessage += '• Is the application server running?\n';
+                        errorMessage += '• Are you accessing the correct port/URL?\n';
+                        errorMessage += '• Check browser console for more details.';
+                    } else if (error.message.includes('HTTP 404')) {
+                        errorMessage += 'API endpoint not found (HTTP 404)\n';
+                        errorMessage += 'The logs API may not be available.';
+                    } else if (error.message.includes('HTTP 500')) {
+                        errorMessage += 'Server error (HTTP 500)\n';
+                        errorMessage += 'Check server logs for more details.';
+                    } else {
+                        errorMessage += error.message;
+                    }
+                    
+                    logContainer.textContent = errorMessage;
+                    logInfo.innerHTML = '<span class="error">⚠️ Failed to connect to logs API</span>';
                 });
         }
         

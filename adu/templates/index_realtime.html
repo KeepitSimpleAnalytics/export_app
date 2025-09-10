@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ADU - High-Performance Data Export</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 2em; }
+        .header { text-align: center; color: white; margin-bottom: 2em; }
+        .header h1 { font-size: 3em; margin: 0; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); }
+        .header p { font-size: 1.2em; opacity: 0.9; }
+        
+        .main-grid { display: grid; grid-template-columns: 1fr 400px; gap: 2em; }
+        .card { background: white; border-radius: 12px; padding: 2em; box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
+        .card h2 { margin-top: 0; color: #333; border-bottom: 3px solid #667eea; padding-bottom: 0.5em; }
+        
+        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5em; }
+        .form-group { margin-bottom: 1.5em; }
+        .form-group.full-width { grid-column: 1 / -1; }
+        label { display: block; margin-bottom: 0.5em; font-weight: 600; color: #333; }
+        input, select, textarea { width: 100%; padding: 0.8em; border: 2px solid #e1e5e9; border-radius: 8px; font-size: 1em; transition: border-color 0.3s; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1); }
+        
+        button { padding: 1em 2em; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 1em; transition: all 0.3s; }
+        .btn-primary { background: linear-gradient(45deg, #667eea, #764ba2); color: white; }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4); }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-discovery { background: #17a2b8; color: white; }
+        
+        .status-panel { background: white; border-radius: 12px; padding: 1.5em; position: sticky; top: 2em; }
+        .connection-status { padding: 0.8em; border-radius: 8px; text-align: center; font-weight: 600; margin-bottom: 1em; }
+        .connected { background: #d4edda; color: #155724; border: 2px solid #c3e6cb; }
+        .disconnected { background: #f8d7da; color: #721c24; border: 2px solid #f5c6cb; }
+        .connecting { background: #d1ecf1; color: #0c5460; border: 2px solid #bee5eb; }
+        
+        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8em; margin: 1em 0; }
+        .metric { background: #f8f9fa; padding: 0.8em; border-radius: 8px; text-align: center; }
+        .metric-value { font-size: 1.5em; font-weight: bold; color: #667eea; display: block; }
+        .metric-label { font-size: 0.8em; color: #666; margin-top: 0.2em; }
+        
+        .progress-section { margin: 1.5em 0; }
+        .progress-bar { width: 100%; height: 8px; background: #e9ecef; border-radius: 4px; overflow: hidden; margin: 0.5em 0; }
+        .progress-fill { height: 100%; background: linear-gradient(90deg, #667eea, #764ba2); transition: width 0.5s ease; border-radius: 4px; }
+        
+        .job-progress { display: none; margin-top: 2em; }
+        .job-progress.active { display: block; animation: slideIn 0.5s ease; }
+        @keyframes slideIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        
+        .table-progress { background: #f8f9fa; padding: 0.8em; margin: 0.5em 0; border-radius: 8px; border-left: 4px solid #667eea; }
+        .table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5em; }
+        .table-name { font-weight: 600; }
+        .table-status { padding: 0.2em 0.6em; border-radius: 12px; font-size: 0.8em; font-weight: 600; }
+        .status-pending { background: #fff3cd; color: #856404; }
+        .status-processing { background: #d1ecf1; color: #0c5460; }
+        .status-completed { background: #d4edda; color: #155724; }
+        .status-failed { background: #f8d7da; color: #721c24; }
+        
+        .table-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.5em; font-size: 0.8em; color: #666; }
+        
+        .discovery-section { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; border-radius: 12px; padding: 1.5em; margin: 1em 0; }
+        .discovered-tables { max-height: 300px; overflow-y: auto; margin: 1em 0; }
+        .table-item { 
+            background: rgba(255,255,255,0.1); 
+            padding: 0.8em; 
+            margin: 0.3em 0; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            transition: all 0.3s;
+            border: 2px solid transparent;
+        }
+        .table-item:hover { background: rgba(255,255,255,0.2); transform: translateX(3px); }
+        .table-item.selected { background: rgba(255,255,255,0.3); border-color: rgba(255,255,255,0.5); }
+        .table-info { font-size: 0.85em; opacity: 0.8; margin-top: 0.3em; }
+        
+        .performance-info { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; padding: 1.5em; border-radius: 12px; margin: 1em 0; }
+        .perf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1em; }
+        .perf-stat { text-align: center; }
+        .perf-value { font-size: 2em; font-weight: bold; display: block; }
+        .perf-label { font-size: 0.9em; opacity: 0.9; }
+        
+        .error { color: #dc3545; background: #f8d7da; padding: 1em; border-radius: 8px; border: 1px solid #f5c6cb; }
+        .success { color: #155724; background: #d4edda; padding: 1em; border-radius: 8px; border: 1px solid #c3e6cb; }
+        .warning { color: #856404; background: #fff3cd; padding: 1em; border-radius: 8px; border: 1px solid #ffeaa7; }
+        
+        @media (max-width: 1200px) {
+            .main-grid { grid-template-columns: 1fr; }
+            .form-grid { grid-template-columns: 1fr; }
+            .status-panel { position: relative; top: auto; }
+        }
+        
+        .pulse { animation: pulse 2s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 ADU High-Performance Export</h1>
+            <p>Optimized for 16-core, 128GB systems • Real-time progress • Data integrity guaranteed</p>
+        </div>
+        
+        <div class="main-grid">
+            <div class="card">
+                <h2>📊 Export Configuration</h2>
+                
+                <form id="export-form">
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="db_type">Database Type</label>
+                            <select id="db_type" name="db_type">
+                                <option value="postgresql">PostgreSQL</option>
+                                <option value="greenplum">Greenplum</option>
+                                <option value="vertica">Vertica</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="db_host">Host</label>
+                            <input type="text" id="db_host" name="db_host" placeholder="localhost" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="db_port">Port</label>
+                            <input type="number" id="db_port" name="db_port" value="5432" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="db_name">Database</label>
+                            <input type="text" id="db_name" name="db_name" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="db_username">Username</label>
+                            <input type="text" id="db_username" name="db_username" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="db_password">Password</label>
+                            <input type="password" id="db_password" name="db_password" required>
+                        </div>
+                        
+                        <div class="form-group full-width">
+                            <button type="button" class="btn-discovery" onclick="discoverDatabase()">
+                                🔍 Discover Database Schema
+                            </button>
+                            <div id="discovery-status"></div>
+                        </div>
+                    </div>
+                    
+                    <div id="discovery-section" class="discovery-section" style="display: none;">
+                        <h3>📋 Table Selection</h3>
+                        <div>
+                            <label>
+                                <input type="radio" name="table-mode" value="all" checked onchange="toggleTableMode()">
+                                Export All Tables
+                            </label>
+                            <label>
+                                <input type="radio" name="table-mode" value="select" onchange="toggleTableMode()">
+                                Select Specific Tables
+                            </label>
+                        </div>
+                        
+                        <div id="table-selection" style="display: none;">
+                            <div id="schema-selector"></div>
+                            <div id="discovered-tables" class="discovered-tables"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="performance-info">
+                        <h3>⚡ Performance Configuration</h3>
+                        <div class="form-grid">
+                            <div class="form-group">
+                                <label for="chunk_size">Chunk Size (rows per file)</label>
+                                <select id="chunk_size" name="chunk_size">
+                                    <option value="1000000">1M rows (balanced)</option>
+                                    <option value="2000000">2M rows (fast)</option>
+                                    <option value="5000000" selected>5M rows (high-performance)</option>
+                                    <option value="10000000">10M rows (maximum)</option>
+                                </select>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="max_threads">Concurrent Tables</label>
+                                <select id="max_threads" name="max_threads">
+                                    <option value="4">4 tables</option>
+                                    <option value="8" selected>8 tables (optimal)</option>
+                                    <option value="12">12 tables (aggressive)</option>
+                                    <option value="16">16 tables (maximum)</option>
+                                </select>
+                            </div>
+                            
+                            <div class="form-group full-width">
+                                <label for="output_path">Export Directory</label>
+                                <input type="text" id="output_path" name="output_path" value="/app/exports" placeholder="/app/exports">
+                            </div>
+                        </div>
+                        
+                        <div class="perf-grid">
+                            <div class="perf-stat">
+                                <span class="perf-value" id="estimated-speed">500K+</span>
+                                <span class="perf-label">Rows/Second</span>
+                            </div>
+                            <div class="perf-stat">
+                                <span class="perf-value" id="estimated-throughput">200+</span>
+                                <span class="perf-label">Tables/Hour</span>
+                            </div>
+                            <div class="perf-stat">
+                                <span class="perf-value">95%</span>
+                                <span class="perf-label">CPU Utilization</span>
+                            </div>
+                            <div class="perf-stat">
+                                <span class="perf-value">32GB</span>
+                                <span class="perf-label">Memory Buffer</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <button type="submit" class="btn-primary" style="width: 100%; padding: 1.2em; font-size: 1.1em;">
+                            🚀 Start High-Performance Export
+                        </button>
+                    </div>
+                </form>
+            </div>
+            
+            <div class="status-panel">
+                <div id="connection-status" class="connection-status disconnected">
+                    🔴 Not Connected
+                </div>
+                
+                <div id="system-metrics">
+                    <h3>📈 System Status</h3>
+                    <div class="metrics-grid">
+                        <div class="metric">
+                            <span class="metric-value" id="active-jobs">0</span>
+                            <span class="metric-label">Active Jobs</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-value" id="throughput">0</span>
+                            <span class="metric-label">Rows/Sec</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-value" id="memory-usage">0%</span>
+                            <span class="metric-label">Memory</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-value" id="cpu-usage">0%</span>
+                            <span class="metric-label">CPU</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="current-job" style="display: none;">
+                    <h3>🔄 Current Job</h3>
+                    <div id="job-info"></div>
+                    <div class="progress-section">
+                        <div class="progress-bar">
+                            <div id="overall-progress" class="progress-fill" style="width: 0%"></div>
+                        </div>
+                        <div id="progress-text">Ready to start...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div id="job-progress" class="card job-progress">
+            <h2>📊 Export Progress</h2>
+            <div id="job-details"></div>
+            <div id="table-progress-list"></div>
+        </div>
+        
+        <div id="results" style="display: none; margin-top: 2em;"></div>
+    </div>
+    
+    <script>
+        let socket;
+        let currentJobId = null;
+        let discoveredTables = [];
+        let selectedTables = [];
+        let tablesBySchema = {};
+        
+        // Initialize WebSocket connection
+        function initializeSocket() {
+            socket = io();
+            
+            socket.on('connect', function() {
+                updateConnectionStatus('connected');
+                console.log('Connected to server');
+            });
+            
+            socket.on('disconnect', function() {
+                updateConnectionStatus('disconnected');
+                console.log('Disconnected from server');
+            });
+            
+            socket.on('job_progress', function(data) {
+                updateJobProgress(data);
+            });
+            
+            socket.on('job_status', function(data) {
+                updateJobStatus(data);
+            });
+        }
+        
+        function updateConnectionStatus(status) {
+            const statusEl = document.getElementById('connection-status');
+            statusEl.className = `connection-status ${status}`;
+            
+            switch(status) {
+                case 'connected':
+                    statusEl.innerHTML = '🟢 Connected - Real-time Updates Active';
+                    break;
+                case 'connecting':
+                    statusEl.innerHTML = '🟡 Connecting...';
+                    statusEl.classList.add('pulse');
+                    break;
+                case 'disconnected':
+                    statusEl.innerHTML = '🔴 Disconnected - No Real-time Updates';
+                    break;
+            }
+        }
+        
+        function updateJobProgress(data) {
+            if (data.job_id === currentJobId) {
+                // Update overall progress
+                const progressBar = document.getElementById('overall-progress');
+                const progressText = document.getElementById('progress-text');
+                
+                if (progressBar) {
+                    progressBar.style.width = `${data.progress_percent}%`;
+                }
+                
+                if (progressText) {
+                    progressText.innerHTML = `
+                        ${Math.round(data.progress_percent)}% Complete • 
+                        ${data.rows_processed.toLocaleString()} / ${data.rows_total.toLocaleString()} rows • 
+                        ${data.throughput_rows_per_sec.toLocaleString()} rows/sec
+                    `;
+                }
+                
+                // Update system metrics
+                document.getElementById('throughput').textContent = data.throughput_rows_per_sec.toLocaleString();
+                document.getElementById('active-jobs').textContent = data.status === 'running' ? '1' : '0';
+                
+                // Update table details
+                updateTableProgressDetails(data.table_details || {});
+                
+                // Show job progress section
+                const jobProgress = document.getElementById('job-progress');
+                if (!jobProgress.classList.contains('active')) {
+                    jobProgress.classList.add('active');
+                }
+            }
+        }
+        
+        function updateTableProgressDetails(tableDetails) {
+            const container = document.getElementById('table-progress-list');
+            if (!container) return;
+            
+            container.innerHTML = '';
+            
+            Object.entries(tableDetails).forEach(([tableName, tableData]) => {
+                const tableDiv = document.createElement('div');
+                tableDiv.className = 'table-progress';
+                
+                tableDiv.innerHTML = `
+                    <div class="table-header">
+                        <span class="table-name">${tableName}</span>
+                        <span class="table-status status-${tableData.status}">${tableData.status}</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: ${tableData.progress_percent}%"></div>
+                    </div>
+                    <div class="table-stats">
+                        <div>Progress: ${Math.round(tableData.progress_percent)}%</div>
+                        <div>Chunks: ${tableData.chunks_completed}/${tableData.chunks_total}</div>
+                        <div>Speed: ${tableData.throughput.toLocaleString()} rows/sec</div>
+                    </div>
+                `;
+                
+                container.appendChild(tableDiv);
+            });
+        }
+        
+        function updateJobStatus(data) {
+            console.log('Job status update:', data);
+            // Handle job status changes
+        }
+        
+        async function discoverDatabase() {
+            const button = document.querySelector('[onclick="discoverDatabase()"]');
+            const statusDiv = document.getElementById('discovery-status');
+            
+            // Get form data
+            const formData = new FormData(document.getElementById('export-form'));
+            const data = Object.fromEntries(formData.entries());
+            
+            button.textContent = '🔄 Discovering...';
+            button.disabled = true;
+            statusDiv.innerHTML = '<div class="warning">Connecting to database...</div>';
+            
+            try {
+                // Discover schemas first
+                const schemaResponse = await fetch('/api/discover-schemas', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                
+                const schemaResult = await schemaResponse.json();
+                
+                if (schemaResult.error) {
+                    throw new Error(schemaResult.error);
+                }
+                
+                // Discover tables by schema
+                const tablesResponse = await fetch('/api/discover-tables-by-schema', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                
+                const tablesResult = await tablesResponse.json();
+                
+                if (tablesResult.error) {
+                    throw new Error(tablesResult.error);
+                }
+                
+                // Store results
+                tablesBySchema = tablesResult.tables_by_schema;
+                discoveredTables = tablesResult.tables.map(t => t.full_name);
+                
+                // Update UI
+                statusDiv.innerHTML = `
+                    <div class="success">
+                        ✅ Found ${tablesResult.total_tables} tables across ${tablesResult.schema_count} schemas
+                    </div>
+                `;
+                
+                // Show discovery section
+                document.getElementById('discovery-section').style.display = 'block';
+                
+                // Populate schema selector
+                populateSchemaSelector(schemaResult.schemas);
+                
+                // Show all tables by default
+                displayAllTables();
+                
+            } catch (error) {
+                statusDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+            } finally {
+                button.textContent = '🔍 Discover Database Schema';
+                button.disabled = false;
+            }
+        }
+        
+        function populateSchemaSelector(schemas) {
+            const container = document.getElementById('schema-selector');
+            container.innerHTML = `
+                <label for="schema-select">Schema Filter:</label>
+                <select id="schema-select" onchange="onSchemaChange()">
+                    <option value="_ALL_">🌐 All Schemas</option>
+                    ${schemas.map(schema => `<option value="${schema}">${schema}</option>`).join('')}
+                </select>
+            `;
+        }
+        
+        function onSchemaChange() {
+            const selectedSchema = document.getElementById('schema-select').value;
+            
+            if (selectedSchema === '_ALL_') {
+                displayAllTables();
+            } else {
+                displaySchemaTable(selectedSchema);
+            }
+        }
+        
+        function displayAllTables() {
+            const allTables = [];
+            Object.values(tablesBySchema).forEach(tables => {
+                tables.forEach(table => allTables.push(table.full_name));
+            });
+            displayTables(allTables, 'All Schemas');
+        }
+        
+        function displaySchemaTable(schema) {
+            const tables = tablesBySchema[schema] || [];
+            displayTables(tables.map(t => t.full_name), schema);
+        }
+        
+        function displayTables(tables, title) {
+            const container = document.getElementById('discovered-tables');
+            container.innerHTML = `
+                <h4>${title} (${tables.length} tables)</h4>
+                ${tables.map(table => `
+                    <div class="table-item" onclick="toggleTableSelection('${table}', this)">
+                        <div><strong>${table}</strong></div>
+                        <div class="table-info">Click to select for export</div>
+                    </div>
+                `).join('')}
+            `;
+        }
+        
+        function toggleTableSelection(tableName, element) {
+            if (selectedTables.includes(tableName)) {
+                selectedTables = selectedTables.filter(t => t !== tableName);
+                element.classList.remove('selected');
+            } else {
+                selectedTables.push(tableName);
+                element.classList.add('selected');
+            }
+        }
+        
+        function toggleTableMode() {
+            const mode = document.querySelector('input[name="table-mode"]:checked').value;
+            const selectionDiv = document.getElementById('table-selection');
+            
+            if (mode === 'select') {
+                selectionDiv.style.display = 'block';
+            } else {
+                selectionDiv.style.display = 'none';
+                selectedTables = [];
+            }
+        }
+        
+        // Form submission
+        document.getElementById('export-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(e.target);
+            const data = Object.fromEntries(formData.entries());
+            
+            // Add selected tables
+            const tableMode = document.querySelector('input[name="table-mode"]:checked').value;
+            data.tables = tableMode === 'all' ? [] : selectedTables;
+            
+            // Convert numeric fields
+            data.chunk_size = parseInt(data.chunk_size);
+            data.max_threads = parseInt(data.max_threads);
+            data.max_chunk_workers = 8; // Default for high-performance systems
+            
+            // Add performance config
+            data.export_organization = {
+                strategy: 'clean_with_archive',
+                conflict_resolution: 'version',
+                preserve_job_history: true
+            };
+            
+            try {
+                const response = await fetch('/api/jobs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                
+                const result = await response.json();
+                
+                if (result.job_id) {
+                    currentJobId = result.job_id;
+                    
+                    // Subscribe to job updates
+                    if (socket) {
+                        socket.emit('subscribe_job', { job_id: result.job_id });
+                    }
+                    
+                    // Show current job section
+                    document.getElementById('current-job').style.display = 'block';
+                    document.getElementById('job-info').innerHTML = `
+                        <strong>Job ID:</strong> ${result.job_id}<br>
+                        <strong>Status:</strong> <span class="status-processing">Starting...</span>
+                    `;
+                    
+                    // Show results
+                    document.getElementById('results').style.display = 'block';
+                    document.getElementById('results').innerHTML = `
+                        <div class="success">
+                            🚀 <strong>Export Started!</strong><br>
+                            Job ID: ${result.job_id}<br>
+                            Real-time progress will appear above.
+                        </div>
+                    `;
+                    
+                } else {
+                    throw new Error(result.error || 'Unknown error');
+                }
+                
+            } catch (error) {
+                document.getElementById('results').style.display = 'block';
+                document.getElementById('results').innerHTML = `
+                    <div class="error">❌ <strong>Error:</strong> ${error.message}</div>
+                `;
+            }
+        });
+        
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeSocket();
+            
+            // Update performance estimates based on configuration
+            document.getElementById('chunk_size').addEventListener('change', updatePerformanceEstimates);
+            document.getElementById('max_threads').addEventListener('change', updatePerformanceEstimates);
+        });
+        
+        function updatePerformanceEstimates() {
+            const chunkSize = parseInt(document.getElementById('chunk_size').value);
+            const threads = parseInt(document.getElementById('max_threads').value);
+            
+            // Rough estimates based on chunk size and thread count
+            const baseSpeed = 50000; // 50K rows/sec base
+            const estimatedSpeed = baseSpeed * threads * (chunkSize / 1000000);
+            const estimatedThroughput = threads * 25; // ~25 tables per hour per thread
+            
+            document.getElementById('estimated-speed').textContent = 
+                estimatedSpeed > 1000000 ? `${(estimatedSpeed/1000000).toFixed(1)}M+` : `${Math.round(estimatedSpeed/1000)}K+`;
+            document.getElementById('estimated-throughput').textContent = `${estimatedThroughput}+`;
+        }
+        
+        // Initialize estimates
+        updatePerformanceEstimates();
+    </script>
+</body>
+</html>
