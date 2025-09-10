@@ -1,0 +1,173 @@
+# ADU High-Performance Export Application
+# Optimized for 16-core, 128GB systems with all dependencies included
+
+# Multi-stage build for optimization
+FROM python:3.12-slim as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gcc \
+    g++ \
+    libpq-dev \
+    libssl-dev \
+    libffi-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create build directory
+WORKDIR /build
+
+# Copy requirements first for better caching
+COPY adu/requirements.txt .
+
+# Install Python dependencies with optimizations
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
+
+#===================================================================
+# Production Stage
+#===================================================================
+FROM python:3.12-slim
+
+# Metadata
+LABEL maintainer="ADU High-Performance Export System"
+LABEL version="2.0.0"
+LABEL description="Air-gapped data utility with 16-core optimization"
+
+# Set environment variables for performance
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONPATH=/app
+ENV POLARS_MAX_THREADS=16
+ENV POLARS_MAX_MEMORY_USAGE=32GB
+ENV CELERY_WORKER_CONCURRENCY=8
+ENV CELERY_WORKER_MAX_TASKS_PER_CHILD=1000
+
+# Application environment
+ENV FLASK_APP=adu.app
+ENV FLASK_ENV=production
+ENV CELERY_BROKER_URL=redis://localhost:6379/0
+ENV CELERY_RESULT_BACKEND=redis://localhost:6379/0
+ENV ADU_DB_PATH=/app/database/adu.db
+ENV ADU_EXPORT_PATH=/app/exports
+ENV ADU_LOG_PATH=/app/logs
+
+# Install runtime dependencies and Redis
+RUN apt-get update && apt-get install -y \
+    # Database client libraries
+    libpq5 \
+    libssl3 \
+    libffi8 \
+    # Redis server
+    redis-server \
+    # Process management
+    supervisor \
+    # System utilities
+    curl \
+    procps \
+    htop \
+    vim \
+    # Cleanup
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create application user for security
+RUN groupadd -r adu && useradd -r -g adu -d /app -s /bin/bash adu
+
+# Create directory structure
+RUN mkdir -p /app/{database,exports,logs,config} && \
+    chown -R adu:adu /app
+
+# Copy Python packages from builder
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Set working directory
+WORKDIR /app
+
+# Copy application code
+COPY --chown=adu:adu adu/ ./adu/
+COPY --chown=adu:adu migrate_database.py ./
+
+# Create supervisor configuration
+COPY --chown=adu:adu docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Create Redis configuration for container
+RUN echo "# Redis configuration for ADU container" > /etc/redis/redis.conf && \
+    echo "bind 127.0.0.1" >> /etc/redis/redis.conf && \
+    echo "port 6379" >> /etc/redis/redis.conf && \
+    echo "daemonize no" >> /etc/redis/redis.conf && \
+    echo "supervised systemd" >> /etc/redis/redis.conf && \
+    echo "loglevel notice" >> /etc/redis/redis.conf && \
+    echo "logfile /app/logs/redis.log" >> /etc/redis/redis.conf && \
+    echo "databases 16" >> /etc/redis/redis.conf && \
+    echo "save 900 1" >> /etc/redis/redis.conf && \
+    echo "save 300 10" >> /etc/redis/redis.conf && \
+    echo "save 60 10000" >> /etc/redis/redis.conf && \
+    echo "maxmemory 2gb" >> /etc/redis/redis.conf && \
+    echo "maxmemory-policy allkeys-lru" >> /etc/redis/redis.conf
+
+# Copy container startup scripts
+COPY --chown=adu:adu docker/entrypoint.sh /app/entrypoint.sh
+COPY --chown=adu:adu docker/healthcheck.sh /app/healthcheck.sh
+COPY --chown=adu:adu docker/container-info.sh /app/container-info.sh
+
+# Make scripts executable
+RUN chmod +x /app/entrypoint.sh /app/healthcheck.sh /app/container-info.sh
+
+# Create startup script that initializes everything
+RUN cat > /app/startup.sh << 'EOF'
+#!/bin/bash
+set -e
+
+echo "🚀 Starting ADU High-Performance Export Container"
+echo "================================================="
+
+# Show system information
+/app/container-info.sh
+
+# Run database migration
+echo "📊 Running database migration..."
+python3 migrate_database.py
+
+# Initialize database if needed
+python3 -c "from adu.database import init_db; init_db()"
+
+echo "✅ Container initialization complete!"
+echo "📊 System ready for high-performance exports"
+
+# Start supervisor to manage all services
+exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
+EOF
+
+RUN chmod +x /app/startup.sh
+
+# Set ownership
+RUN chown -R adu:adu /app
+
+# Create volume mount points
+VOLUME ["/app/exports", "/app/database", "/app/logs"]
+
+# Expose ports
+EXPOSE 5000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD /app/healthcheck.sh
+
+# Switch to application user
+USER adu
+
+# Container entry point
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["/app/startup.sh"]
+
+# Build information
+ARG BUILD_DATE
+ARG BUILD_VERSION
+ARG BUILD_COMMIT
+
+LABEL build.date=$BUILD_DATE
+LABEL build.version=$BUILD_VERSION  
+LABEL build.commit=$BUILD_COMMIT

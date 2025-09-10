@@ -1,0 +1,43 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE files
+.idea/
+
+# Documentation files (generated/temporary)
+*.md
+!README.md
+
+# Archive files
+*.tar
+*.tar.gz
+*.gz
+
+# Docker temporary files
+adu-export-*.tar
+
+# Debug and test files
+debug_*.py
+test_*.py
+verify_*.py
+
+# Deployment scripts (temporary/generated)
+build-*.sh
+deploy-*.sh
+start-*.sh
+restart_*.sh
+monitor_*.sh
+rebuild_*.sh
+verify-*.sh
+
+# Configuration files (temporary)
+supervisord.conf
+
+# Temporary directories
+adu-airgapped-*/
+adu-export-*/
+
+# Deployment info
+deployment_info.txt
